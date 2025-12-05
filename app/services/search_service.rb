@@ -5,7 +5,7 @@ class SearchService
 
       # Generate embedding for the search query
       query_embedding = EmbeddingService.embed(query)
-      
+
       return Message.none if query_embedding.nil?
 
       # Search for similar messages using vector similarity
@@ -16,4 +16,3 @@ class SearchService
     end
   end
 end
-

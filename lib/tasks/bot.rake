@@ -40,7 +40,7 @@ namespace :bot do
             # Handle /ask command
             if message.text.start_with?('/ask')
               query = message.text.sub('/ask', '').strip
-              
+
               if query.blank?
                 bot.api.send_message(
                   chat_id: message.chat.id,
@@ -84,4 +84,3 @@ namespace :bot do
     end
   end
 end
-

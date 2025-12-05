@@ -10,7 +10,7 @@ RSpec.describe DeleteOldMessagesJob, type: :job do
       expect {
         DeleteOldMessagesJob.perform_now
       }.to change(Message, :count).by(-2)
-      
+
       expect(Message.exists?(recent_message.id)).to be true
       expect(Message.exists?(old_message1.id)).to be false
       expect(Message.exists?(old_message2.id)).to be false
@@ -27,4 +27,3 @@ RSpec.describe DeleteOldMessagesJob, type: :job do
     end
   end
 end
-

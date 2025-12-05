@@ -14,7 +14,7 @@ class EmbeddingService
       )
 
       embedding = response.dig('data', 0, 'embedding')
-      
+
       if embedding.nil?
         Rails.logger.error("Failed to get embedding for text: #{text[0..50]}...")
         return nil
@@ -33,4 +33,3 @@ class EmbeddingService
     end
   end
 end
-

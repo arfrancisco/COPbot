@@ -5,9 +5,9 @@ RSpec.describe EmbeddingService, type: :service do
     context 'with valid text' do
       it 'returns an embedding array', :vcr do
         text = 'This is a test message'
-        
+
         embedding = EmbeddingService.embed(text)
-        
+
         expect(embedding).to be_an(Array)
         expect(embedding.length).to eq(1536)
         expect(embedding.first).to be_a(Float)
@@ -33,4 +33,3 @@ RSpec.describe EmbeddingService, type: :service do
     end
   end
 end
-

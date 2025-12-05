@@ -29,7 +29,7 @@ class TelegramBotService
 
       # Search for relevant messages
       results = SearchService.search(query, limit: 8)
-      
+
       if results.empty?
         bot.api.send_message(
           chat_id: message.chat.id,
@@ -52,7 +52,7 @@ class TelegramBotService
     rescue StandardError => e
       Rails.logger.error("Error processing user query: #{e.message}")
       Rails.logger.error(e.backtrace.join("\n"))
-      
+
       bot.api.send_message(
         chat_id: message.chat.id,
         text: "Sorry, I encountered an error processing your request."
@@ -99,4 +99,3 @@ class TelegramBotService
     end
   end
 end
-

@@ -53,7 +53,7 @@ RSpec.describe Message, type: :model do
       it 'returns messages ordered by timestamp desc' do
         older = create(:message, message_timestamp: 2.days.ago)
         newer = create(:message, message_timestamp: 1.day.ago)
-        
+
         expect(Message.ordered.first).to eq(newer)
         expect(Message.ordered.last).to eq(older)
       end
@@ -79,4 +79,3 @@ RSpec.describe Message, type: :model do
     end
   end
 end
-

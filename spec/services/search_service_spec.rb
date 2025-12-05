@@ -8,9 +8,9 @@ RSpec.describe SearchService, type: :service do
     context 'with valid query' do
       it 'returns relevant messages' do
         allow(EmbeddingService).to receive(:embed).and_return(Array.new(1536) { rand })
-        
+
         results = SearchService.search('password reset', limit: 5)
-        
+
         expect(results).to be_a(ActiveRecord::Relation)
       end
     end
@@ -34,4 +34,3 @@ RSpec.describe SearchService, type: :service do
     end
   end
 end
-
