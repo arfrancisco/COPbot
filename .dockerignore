@@ -1,0 +1,40 @@
+# Ignore git files
+.git
+.gitignore
+
+# Ignore bundler config and installed gems
+/.bundle
+/vendor/bundle
+
+# Ignore all logfiles and tempfiles
+/log/*
+/tmp/*
+
+# Ignore uploaded files
+/storage/*
+
+# Ignore master key for decrypting credentials
+/config/master.key
+
+# Ignore environment files
+.env
+.env.*
+
+# Ignore node modules
+/node_modules
+
+# Ignore test files
+/spec
+/test
+/coverage
+
+# Ignore documentation
+/doc
+/README.md
+
+# Ignore development files
+.vscode
+.idea
+*.swp
+*.swo
+

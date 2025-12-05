@@ -1,0 +1,59 @@
+{
+  "name": "Telegram AI Concierge Bot",
+  "description": "A Telegram bot with AI-powered semantic search using OpenAI and pgvector",
+  "keywords": ["telegram", "bot", "openai", "pgvector", "rails", "ai"],
+  "repository": "https://github.com/yourusername/telegram-bot",
+  "stack": "heroku-24",
+  "buildpacks": [
+    {
+      "url": "heroku/ruby"
+    }
+  ],
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    },
+    "bot": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "addons": [
+    {
+      "plan": "heroku-postgresql:standard-0",
+      "options": {
+        "version": "16"
+      }
+    },
+    {
+      "plan": "scheduler:standard"
+    }
+  ],
+  "env": {
+    "TELEGRAM_BOT_TOKEN": {
+      "description": "Your Telegram Bot Token from @BotFather",
+      "required": true
+    },
+    "OPENAI_API_KEY": {
+      "description": "Your OpenAI API Key",
+      "required": true
+    },
+    "RAILS_ENV": {
+      "value": "production"
+    },
+    "RAILS_SERVE_STATIC_FILES": {
+      "value": "true"
+    },
+    "RAILS_LOG_TO_STDOUT": {
+      "value": "true"
+    },
+    "LANG": {
+      "value": "en_US.UTF-8"
+    }
+  },
+  "scripts": {
+    "postdeploy": "bundle exec rake db:migrate db:seed"
+  }
+}
+
