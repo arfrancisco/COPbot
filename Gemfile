@@ -7,7 +7,6 @@ gem 'rails', '~> 7.0.8'
 
 # Database
 gem 'pg', '~> 1.1'
-gem 'pgvector'
 
 # Web server
 gem 'puma', '~> 5.0'
@@ -17,6 +16,11 @@ gem 'telegram-bot-ruby'
 
 # OpenAI
 gem 'ruby-openai'
+
+# Background jobs
+gem 'sidekiq', '~> 7.2.0'
+gem 'redis', '~> 5.0'
+gem 'connection_pool', '~> 2.4'  # Pin to 2.x for Sidekiq compatibility
 
 # Environment variables
 gem 'dotenv-rails'
@@ -42,4 +46,3 @@ end
 group :development do
   # Add any development-specific gems here
 end
-

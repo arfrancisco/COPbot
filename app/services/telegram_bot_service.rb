@@ -1,26 +1,33 @@
 class TelegramBotService
   class << self
     def process_channel_message(message)
-      return unless message.chat.type == 'channel'
+      return unless ['channel', 'supergroup', 'group'].include?(message.chat.type)
 
       text = extract_text(message)
       return if text.blank?
 
-      # Generate embedding for the message
-      embedding = EmbeddingService.embed(text)
-      return if embedding.nil?
+      # Build channel identifier and name
+      if message.is_topic_message && message.message_thread_id
+        channel_id = "#{message.chat.id}_#{message.message_thread_id}"
+        # Try to get topic name if available
+        topic_name = extract_topic_name(message)
+        channel_name = "#{topic_name || "Topic #{message.message_thread_id}"}"
+      else
+        channel_id = message.chat.id.to_s
+        channel_name = "General"
+      end
 
-      # Store the message in the database
-      Message.create!(
-        channel_id: message.chat.id,
-        text: text,
-        message_timestamp: Time.at(message.date),
-        embedding: embedding
+      # Enqueue background job to store the message
+      StoreChannelMessageJob.perform_later(
+        channel_id,
+        channel_name,
+        text,
+        Time.at(message.date)
       )
 
-      Rails.logger.info("Saved channel message: #{text[0..60]}...")
+      Rails.logger.info("Enqueued channel message for processing: #{text[0..60]}...")
     rescue StandardError => e
-      Rails.logger.error("Error processing channel message: #{e.message}")
+      Rails.logger.error("Error enqueuing channel message: #{e.message}")
       Rails.logger.error(e.backtrace.join("\n"))
     end
 
@@ -42,7 +49,7 @@ class TelegramBotService
       context = results.map(&:text).join("\n\n---\n\n")
 
       # Generate response using OpenAI
-      response = generate_response(query, context)
+      response = OpenAiService.generate_response(query, context)
 
       # Send response back to user
       bot.api.send_message(
@@ -65,37 +72,11 @@ class TelegramBotService
       message.text || message.caption || ''
     end
 
-    def generate_response(query, context)
-      client = OpenAI::Client.new
-
-      response = client.chat(
-        parameters: {
-          model: 'gpt-4o-mini',
-          messages: [
-            {
-              role: 'system',
-              content: 'You are a helpful concierge assistant. Answer the user\'s question using ONLY the provided context. ' \
-                       'Respond in the same language as the user\'s question. Support English, Filipino/Tagalog, and Taglish (mixed Filipino-English). ' \
-                       'If the context doesn\'t contain relevant information, politely say you don\'t have that information.'
-            },
-            {
-              role: 'assistant',
-              content: "Context from relevant messages:\n\n#{context}"
-            },
-            {
-              role: 'user',
-              content: query
-            }
-          ],
-          temperature: 0.7,
-          max_tokens: 500
-        }
-      )
-
-      response.dig('choices', 0, 'message', 'content') || 'No answer generated.'
-    rescue StandardError => e
-      Rails.logger.error("Error generating response: #{e.message}")
-      "Sorry, I couldn't generate a response at this time."
+    def extract_topic_name(message)
+      # Check if this is a reply and the replied message created the topic
+      if message.reply_to_message&.forum_topic_created
+        message.reply_to_message.forum_topic_created.name
+      end
     end
   end
 end

@@ -2,19 +2,29 @@ version: '3.8'
 
 services:
   db:
-    image: ankane/pgvector:latest
+    image: ankane/pgvector:v0.5.1
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: telegram_bot_development
+      POSTGRES_DB: cop_bot_development
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
       retries: 5
 
   web:
@@ -28,8 +38,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/telegram_bot_development
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/cop_bot_development
+      REDIS_URL: redis://redis:6379/0
       RAILS_ENV: development
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
@@ -45,14 +58,35 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/telegram_bot_development
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/cop_bot_development
+      REDIS_URL: redis://redis:6379/0
       RAILS_ENV: development
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: bundle exec sidekiq
+    volumes:
+      - .:/app
+      - bundle_cache:/usr/local/bundle
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/cop_bot_development
+      REDIS_URL: redis://redis:6379/0
+      RAILS_ENV: development
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     restart: unless-stopped
 
 volumes:
   postgres_data:
   bundle_cache:
-
+  redis_data:

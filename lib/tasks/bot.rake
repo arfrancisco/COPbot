@@ -1,6 +1,12 @@
+require 'telegram/bot'
+
 namespace :bot do
   desc 'Start the Telegram bot listener'
   task listen: :environment do
+    # Disable output buffering so logs show immediately
+    STDOUT.sync = true
+    STDERR.sync = true
+
     token = ENV['TELEGRAM_BOT_TOKEN']
 
     if token.blank?
@@ -26,17 +32,29 @@ namespace :bot do
     begin
       Telegram::Bot::Client.run(token) do |bot|
         puts "Bot connected successfully!"
+        STDOUT.flush
 
         bot.listen do |message|
           next unless message.is_a?(Telegram::Bot::Types::Message)
 
-          # Process channel messages (bot must be admin)
-          if message.chat.type == 'channel'
-            TelegramBotService.process_channel_message(message)
-          else
-            # Process user queries in private chats or groups
-            next unless message.text
+          # Debug logging
+          puts "=" * 80
+          puts "Received message:"
+          puts "  Chat type: #{message.chat.type}"
+          puts "  Chat ID: #{message.chat.id}"
+          puts "  Chat title: #{message.chat.title || 'N/A'}"
+          puts "  From: #{message.from&.username || message.from&.first_name || 'Unknown'}"
+          puts "  Text: #{message.text || message.caption || '[No text]'}"
+          puts "=" * 80
 
+          # Store messages from channels, groups, and supergroups (bot must be admin in channels)
+          if ['channel', 'supergroup', 'group'].include?(message.chat.type)
+            puts "✓ Storing message from #{message.chat.type}"
+            TelegramBotService.process_channel_message(message)
+          end
+
+          # Handle commands in private chats, groups, and supergroups (not channels)
+          if message.chat.type != 'channel' && message.text
             # Handle /ask command
             if message.text.start_with?('/ask')
               query = message.text.sub('/ask', '').strip

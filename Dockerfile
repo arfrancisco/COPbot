@@ -6,6 +6,7 @@ RUN apt-get update -qq && \
     build-essential \
     libpq-dev \
     postgresql-client \
+    libyaml-dev \
     git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,4 +31,3 @@ EXPOSE 3000
 
 # Start the server
 CMD ["bundle", "exec", "puma", "-C", "config/puma.rb"]
-
