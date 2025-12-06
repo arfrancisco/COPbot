@@ -18,14 +18,15 @@ class TelegramBotService
       end
 
       # Enqueue background job to store the message
-      StoreChannelMessageJob.perform_later(
+      # Using perform_now for immediate processing to ensure messages are stored
+      StoreChannelMessageJob.perform_now(
         channel_id,
         channel_name,
         text,
         Time.at(message.date)
       )
 
-      Rails.logger.info("Enqueued channel message for processing: #{text[0..60]}...")
+      Rails.logger.info("Processed channel message: #{text[0..60]}...")
     rescue StandardError => e
       Rails.logger.error("Error enqueuing channel message: #{e.message}")
       Rails.logger.error(e.backtrace.join("\n"))
@@ -34,34 +35,61 @@ class TelegramBotService
     def process_user_query(bot, message, query)
       return if query.blank?
 
-      # Search for relevant messages
-      results = SearchService.search(query, limit: 8)
+      puts "🔍 Processing query: '#{query}'"
+      STDOUT.flush
+
+      # Search for relevant messages with more results for better context
+      results = SearchService.search(query, limit: 12)
+
+      puts "📊 Search returned #{results.length} results"
+      STDOUT.flush
 
       if results.empty?
+        puts "❌ No results found"
+        STDOUT.flush
+
+        # Check if there are any messages in the database at all
+        total_messages = Message.count
+        puts "📈 Total messages in database: #{total_messages}"
+        STDOUT.flush
+
         bot.api.send_message(
           chat_id: message.chat.id,
+          reply_to_message_id: message.message_id,
           text: "I couldn't find any relevant information about that."
         )
         return
       end
 
-      # Build context from search results
-      context = results.map(&:text).join("\n\n---\n\n")
+      puts "✅ Found relevant results, generating response..."
+      STDOUT.flush
+
+      # Build context from search results with metadata
+      context = results.map.with_index do |msg, idx|
+        timestamp = msg.message_timestamp.strftime("%b %d, %Y")
+        "[Message #{idx + 1}] (#{timestamp} - #{msg.channel_name}):\n#{msg.text}"
+      end.join("\n\n---\n\n")
 
       # Generate response using OpenAI
       response = OpenAiService.generate_response(query, context)
 
-      # Send response back to user
+      # Send response back to user as a reply
       bot.api.send_message(
         chat_id: message.chat.id,
+        reply_to_message_id: message.message_id,
         text: response
       )
     rescue StandardError => e
       Rails.logger.error("Error processing user query: #{e.message}")
       Rails.logger.error(e.backtrace.join("\n"))
 
+      puts "❌ Error processing query: #{e.message}"
+      puts e.backtrace.first(5).join("\n")
+      STDOUT.flush
+
       bot.api.send_message(
         chat_id: message.chat.id,
+        reply_to_message_id: message.message_id,
         text: "Sorry, I encountered an error processing your request."
       )
     end

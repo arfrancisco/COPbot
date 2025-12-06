@@ -5,32 +5,52 @@ class OpenAiService
 
       response = client.chat(
         parameters: {
-          model: 'gpt-4o-nano',
+          model: 'gpt-4o',  # Using full gpt-4o for better multilingual understanding
           messages: [
             {
               role: 'system',
-              content: 'You are a helpful concierge assistant. Answer the user\'s question using ONLY the provided context. ' \
-                       'Respond in the same language as the user\'s question. Support English, Filipino/Tagalog, and Taglish (mixed Filipino-English). ' \
-                       'If the context doesn\'t contain relevant information, politely say you don\'t have that information.'
-            },
-            {
-              role: 'assistant',
-              content: "Context from relevant messages:\n\n#{context}"
+              content: <<~PROMPT
+                You are a helpful concierge assistant for a community.
+
+                Your task is to answer questions based ONLY on the provided context from recent messages.
+
+                Language Guidelines:
+                - If the question is in English, respond in English
+                - If the question is in Filipino/Tagalog, respond in Filipino/Tagalog
+                - If the question is in Taglish (mixed), respond naturally in Taglish
+                - Match the tone and formality of the question
+
+                Important Rules:
+                1. Only use information from the provided context
+                2. If the context doesn't contain relevant information, say: "I don't have that information in the recent messages."
+                3. Be concise and direct
+                4. Quote or reference specific messages when appropriate
+                5. Don't make assumptions or add information not in the context
+              PROMPT
             },
             {
               role: 'user',
-              content: query
+              content: <<~MESSAGE
+                Here are recent messages that might be relevant:
+
+                #{context}
+
+                ---
+
+                Question: #{query}
+              MESSAGE
             }
           ],
-          temperature: 0.7,
-          max_tokens: 500
+          temperature: 0.3,  # Lower temperature for more factual, accurate responses
+          max_tokens: 600     # Slightly more tokens for detailed answers
         }
       )
 
       response.dig('choices', 0, 'message', 'content') || 'No answer generated.'
     rescue StandardError => e
       Rails.logger.error("Error generating response: #{e.message}")
-      "Sorry, I couldn't generate a response at this time."
+      Rails.logger.error(e.backtrace.first(5).join("\n"))
+      "Sorry, I couldn't generate a response at this time. Error: #{e.message}"
     end
   end
 end

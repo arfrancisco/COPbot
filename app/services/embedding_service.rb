@@ -13,16 +13,23 @@ class EmbeddingService
         }
       )
 
-      embedding = response.dig('data', 0, 'embedding')
+      # Handle both hash and object response formats
+      embedding = if response.is_a?(Hash)
+                    response.dig('data', 0, 'embedding')
+                  else
+                    response.dig('data', 0, 'embedding')
+                  end
 
-      if embedding.nil?
-        Rails.logger.error("Failed to get embedding for text: #{text[0..50]}...")
+      if embedding.nil? || !embedding.is_a?(Array) || embedding.length != EMBEDDING_DIMENSION
+        Rails.logger.error("Invalid embedding response for text: #{text[0..50]}...")
+        Rails.logger.error("Response: #{response.inspect[0..200]}")
         return nil
       end
 
       embedding
     rescue StandardError => e
       Rails.logger.error("Error generating embedding: #{e.message}")
+      Rails.logger.error(e.backtrace.first(5).join("\n"))
       nil
     end
 

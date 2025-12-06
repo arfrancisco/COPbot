@@ -14,7 +14,7 @@ class StoreChannelMessageJob < ApplicationJob
       return
     end
 
-    puts "[StoreChannelMessageJob] Embedding generated, saving to database..."
+    puts "[StoreChannelMessageJob] Embedding generated (#{embedding.class}, length: #{embedding.length}), saving to database..."
     STDOUT.flush
 
     # Store the message in the database
