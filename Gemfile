@@ -1,6 +1,6 @@
 source 'https://rubygems.org'
 
-ruby '3.4.5'
+ruby '3.3.6'
 
 # Rails framework
 gem 'rails', '~> 7.0.8'
