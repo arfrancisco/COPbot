@@ -42,12 +42,12 @@ class Message < ApplicationRecord
       if keywords.any?
         text_lower = msg.text.downcase
         matched_keywords = keywords.count { |kw| text_lower.include?(kw) }
-        keyword_score = (matched_keywords.to_f / keywords.length) * 0.3  # Up to 30% boost
+        keyword_score = (matched_keywords.to_f / keywords.length) * 0.6  # Up to 60% boost (increased from 30%)
 
         # Extra boost for longer messages with keyword matches
         # (helps surface detailed documents that mention the topic)
         if matched_keywords > 0 && msg.text.length > 500
-          keyword_score += 0.2
+          keyword_score += 0.5  # Increased from 0.2 to 0.5
         end
       end
 
