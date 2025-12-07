@@ -7,6 +7,7 @@ gem 'rails', '~> 7.0.8'
 
 # Database
 gem 'pg', '~> 1.1'
+gem 'neighbor', '~> 0.3'  # pgvector support for fast vector similarity search
 
 # Web server
 gem 'puma', '~> 5.0'

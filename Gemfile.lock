@@ -167,6 +167,8 @@ GEM
     msgpack (1.8.0)
     multipart-post (2.4.1)
     mutex_m (0.3.0)
+    neighbor (0.5.2)
+      activerecord (>= 7)
     net-http (0.8.0)
       uri (>= 0.11.1)
     net-imap (0.5.12)
@@ -324,6 +326,7 @@ DEPENDENCIES
   dotenv-rails
   factory_bot_rails
   faker
+  neighbor (~> 0.3)
   pg (~> 1.1)
   puma (~> 5.0)
   rails (~> 7.0.8)

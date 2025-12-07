@@ -1,6 +1,6 @@
 class EmbeddingService
-  EMBEDDING_MODEL = 'text-embedding-3-small'.freeze
-  EMBEDDING_DIMENSION = 1536
+  EMBEDDING_MODEL = 'text-embedding-3-large'.freeze
+  EMBEDDING_DIMENSION = 1536  # Reduced from 3072 to enable HNSW indexing
 
   class << self
     def embed(text)
@@ -9,7 +9,8 @@ class EmbeddingService
       response = client.embeddings(
         parameters: {
           model: EMBEDDING_MODEL,
-          input: text.strip
+          input: text.strip,
+          dimensions: EMBEDDING_DIMENSION  # Request reduced dimensions from OpenAI
         }
       )
 

@@ -10,9 +10,10 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.0].define(version: 2024_12_06_000001) do
+ActiveRecord::Schema[7.0].define(version: 2024_12_07_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "plpgsql"
+  enable_extension "vector"
 
   create_table "messages", force: :cascade do |t|
     t.string "channel_id", null: false
@@ -22,9 +23,10 @@ ActiveRecord::Schema[7.0].define(version: 2024_12_06_000001) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.string "channel_name"
+    t.vector "embedding_vector", limit: 1536
     t.index ["channel_id"], name: "index_messages_on_channel_id"
     t.index ["channel_name"], name: "index_messages_on_channel_name"
-    t.index ["embedding"], name: "index_messages_on_embedding", using: :gin
+    t.index ["embedding_vector"], name: "index_messages_on_embedding_vector", opclass: :vector_cosine_ops, using: :hnsw
     t.index ["message_timestamp"], name: "index_messages_on_message_timestamp"
   end
 
