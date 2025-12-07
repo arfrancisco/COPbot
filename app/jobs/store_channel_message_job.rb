@@ -17,13 +17,14 @@ class StoreChannelMessageJob < ApplicationJob
     puts "[StoreChannelMessageJob] Embedding generated (#{embedding.class}, length: #{embedding.length}), saving to database..."
     STDOUT.flush
 
-    # Store the message in the database
+    # Store the message in the database with both JSONB and vector embeddings
     Message.create!(
       channel_id: channel_id,
       channel_name: channel_name,
       text: text,
       message_timestamp: message_timestamp,
-      embedding: embedding
+      embedding: embedding,
+      embedding_vector: embedding  # Populate pgvector column for fast similarity search
     )
 
     puts "[StoreChannelMessageJob] ✓ Successfully saved message to database"
