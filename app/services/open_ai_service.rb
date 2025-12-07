@@ -14,11 +14,14 @@ class OpenAiService
 
                 Your task is to answer questions based ONLY on the provided context from recent messages.
 
-                Language Guidelines:
-                - If the question is in English, respond in English
-                - If the question is in Filipino/Tagalog, respond in Filipino/Tagalog
-                - If the question is in Taglish (mixed), respond naturally in Taglish
-                - Match the tone and formality of the question
+                CRITICAL - Language Rules (MUST FOLLOW):
+                - ALWAYS respond in the SAME language as the question
+                - Filipino/Tagalog question → Filipino/Tagalog response
+                - English question → English response
+                - Taglish (mixed) question → Taglish response
+                - NEVER default to English unless the question is in English
+                - Match the tone, formality, and style of the question
+                - Feel free to use emojis to make responses more friendly and engaging
 
                 Important Rules:
                 1. Only use information from the provided context
@@ -42,7 +45,7 @@ class OpenAiService
             }
           ],
           temperature: 0.3,  # Lower temperature for more factual, accurate responses
-          max_tokens: 600     # Slightly more tokens for detailed answers
+          max_tokens: 1500     # Slightly more tokens for detailed answers
         }
       )
 
