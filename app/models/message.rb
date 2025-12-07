@@ -13,7 +13,7 @@ class Message < ApplicationRecord
   scope :ordered, -> { order(message_timestamp: :desc) }
 
   # Class methods
-  def self.search_by_embedding(query_embedding, limit: 10, similarity_threshold: 0.7)
+  def self.search_by_embedding(query_embedding, limit: 10, similarity_threshold: 0.5)
     # Use pgvector for FAST cosine similarity search
     # This is 100x+ faster than the old JSONB approach
 
