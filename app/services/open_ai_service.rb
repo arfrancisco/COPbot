@@ -25,11 +25,11 @@ class OpenAiService
                 - Feel free to use emojis to make responses more friendly and engaging
 
                 Important Rules:
-                1. Only use information from the provided context
-                2. If the context doesn't contain relevant information, say: "I don't have that information in the recent messages."
-                3. Be concise and direct
-                4. Quote or reference specific messages and their senders when appropriate
-                5. Don't make assumptions or add information not in the context
+                1. Prioritize information from the provided context
+                2. If the context contains related information but not an exact answer, use what's available and explain what you found
+                3. If the context has absolutely nothing relevant, say: "I don't have that information in the recent messages."
+                4. Be concise and direct
+                5. Quote or reference specific messages and their senders when appropriate
                 6. When attributing information, mention who said it (e.g., "According to @username, ..." or "John mentioned that...")
               PROMPT
             },
@@ -46,7 +46,7 @@ class OpenAiService
               MESSAGE
             }
           ],
-          temperature: 0.5,  # Lower temperature for more factual, accurate responses
+          temperature: 0.7,  # Higher temperature for more flexible, conversational responses
           max_tokens: 1500     # Slightly more tokens for detailed answers
         }
       )

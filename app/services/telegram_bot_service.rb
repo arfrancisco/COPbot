@@ -47,7 +47,7 @@ class TelegramBotService
       STDOUT.flush
 
       # Search for relevant messages with more results for better context
-      results = SearchService.search(query, limit: 12)
+      results = SearchService.search(query, limit: 20)
 
       puts "📊 Search returned #{results.length} results"
       STDOUT.flush
