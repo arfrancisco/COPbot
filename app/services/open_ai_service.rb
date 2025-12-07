@@ -46,7 +46,7 @@ class OpenAiService
               MESSAGE
             }
           ],
-          temperature: 0.3,  # Lower temperature for more factual, accurate responses
+          temperature: 0.5,  # Lower temperature for more factual, accurate responses
           max_tokens: 1500     # Slightly more tokens for detailed answers
         }
       )
