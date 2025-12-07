@@ -13,7 +13,7 @@ class Message < ApplicationRecord
   scope :ordered, -> { order(message_timestamp: :desc) }
 
   # Class methods
-  def self.search_by_embedding(query_embedding, limit: 10)
+  def self.search_by_embedding(query_embedding, limit: 10, similarity_threshold: 0.7)
     # Use pgvector for FAST cosine similarity search
     # This is 100x+ faster than the old JSONB approach
 
@@ -21,13 +21,23 @@ class Message < ApplicationRecord
     STDOUT.flush
 
     # Use pgvector's nearest_neighbors method for lightning-fast search
-    # The <=> operator uses cosine distance (which is what we want)
-    results = Message
+    # Fetch more results initially to apply similarity filtering
+    # Cosine distance ranges from 0 (identical) to 2 (opposite)
+    # Distance < 0.3 = very similar, < 0.5 = similar, < 0.7 = somewhat similar
+    candidates = Message
       .nearest_neighbors(:embedding_vector, query_embedding, distance: "cosine")
-      .limit(limit)
+      .limit(limit * 5)  # Get 5x limit for filtering
       .to_a
 
-    puts "    [Message.search_by_embedding] Query returned #{results.length} results"
+    # Filter by similarity threshold (lower distance = more similar)
+    # Convert similarity_threshold (0-1, higher = more similar) to distance (0-2, lower = more similar)
+    max_distance = 1.0 - similarity_threshold
+
+    results = candidates.select do |msg|
+      msg.neighbor_distance <= max_distance
+    end.first(limit)
+
+    puts "    [Message.search_by_embedding] Filtered #{candidates.length} candidates to #{results.length} results (threshold: #{similarity_threshold})"
     STDOUT.flush
 
     results
