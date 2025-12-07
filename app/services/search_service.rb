@@ -19,7 +19,8 @@ class SearchService
       STDOUT.flush
 
       # Search for similar messages using vector similarity
-      results = Message.search_by_embedding(query_embedding, limit: limit)
+      # Pass the query text for hybrid keyword boosting
+      results = Message.search_by_embedding(query_embedding, limit: limit, query_text: query)
 
       puts "  [SearchService] Found #{results.length} results"
       STDOUT.flush
