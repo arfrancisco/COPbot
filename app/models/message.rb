@@ -7,6 +7,7 @@ class Message < ApplicationRecord
   validates :text, presence: true
   validates :message_timestamp, presence: true
   validates :embedding, presence: true
+  # sender_id and sender_name are optional to support legacy messages
 
   # Scopes
   scope :by_channel, ->(channel_id) { where(channel_id: channel_id) }
@@ -80,5 +81,18 @@ class Message < ApplicationRecord
   # Instance methods
   def age_in_days
     ((Time.current - message_timestamp) / 1.day).to_i
+  end
+
+  def sender_display_name
+    # Display both name and username when available
+    if sender_name.present? && sender_username.present?
+      "#{sender_name} (@#{sender_username})"
+    elsif sender_username.present?
+      "@#{sender_username}"
+    elsif sender_name.present?
+      sender_name
+    else
+      "User #{sender_id}"
+    end
   end
 end

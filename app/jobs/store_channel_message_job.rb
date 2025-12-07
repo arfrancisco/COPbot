@@ -1,7 +1,7 @@
 class StoreChannelMessageJob < ApplicationJob
   queue_as :default
 
-  def perform(channel_id, channel_name, text, message_timestamp)
+  def perform(channel_id, channel_name, text, message_timestamp, sender_id = nil, sender_name = nil, sender_username = nil)
     puts "[StoreChannelMessageJob] Starting to process message: #{text[0..60]}..."
     STDOUT.flush
 
@@ -24,7 +24,10 @@ class StoreChannelMessageJob < ApplicationJob
       text: text,
       message_timestamp: message_timestamp,
       embedding: embedding,
-      embedding_vector: embedding  # Populate pgvector column for fast similarity search
+      embedding_vector: embedding,  # Populate pgvector column for fast similarity search
+      sender_id: sender_id,
+      sender_name: sender_name,
+      sender_username: sender_username
     )
 
     puts "[StoreChannelMessageJob] ✓ Successfully saved message to database"

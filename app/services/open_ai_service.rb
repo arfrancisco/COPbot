@@ -13,6 +13,7 @@ class OpenAiService
                 You are a helpful concierge assistant for a community.
 
                 Your task is to answer questions based ONLY on the provided context from recent messages.
+                Each message includes information about who sent it, when, and which channel it was posted in.
 
                 CRITICAL - Language Rules (MUST FOLLOW):
                 - ALWAYS respond in the SAME language as the question
@@ -27,8 +28,9 @@ class OpenAiService
                 1. Only use information from the provided context
                 2. If the context doesn't contain relevant information, say: "I don't have that information in the recent messages."
                 3. Be concise and direct
-                4. Quote or reference specific messages when appropriate
+                4. Quote or reference specific messages and their senders when appropriate
                 5. Don't make assumptions or add information not in the context
+                6. When attributing information, mention who said it (e.g., "According to @username, ..." or "John mentioned that...")
               PROMPT
             },
             {

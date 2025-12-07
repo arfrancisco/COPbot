@@ -17,13 +17,21 @@ class TelegramBotService
         channel_name = "General"
       end
 
+      # Extract sender information
+      sender_id = message.from&.id&.to_s
+      sender_name = extract_sender_name(message.from)
+      sender_username = message.from&.username
+
       # Enqueue background job to store the message
       # Using perform_now for immediate processing to ensure messages are stored
       StoreChannelMessageJob.perform_now(
         channel_id,
         channel_name,
         text,
-        Time.at(message.date)
+        Time.at(message.date),
+        sender_id,
+        sender_name,
+        sender_username
       )
 
       Rails.logger.info("Processed channel message: #{text[0..60]}...")
@@ -67,7 +75,8 @@ class TelegramBotService
       # Build context from search results with metadata
       context = results.map.with_index do |msg, idx|
         timestamp = msg.message_timestamp.strftime("%b %d, %Y")
-        "[Message #{idx + 1}] (#{timestamp} - #{msg.channel_name}):\n#{msg.text}"
+        sender = msg.sender_display_name
+        "[Message #{idx + 1}] From: #{sender} (#{timestamp} - #{msg.channel_name}):\n#{msg.text}"
       end.join("\n\n---\n\n")
 
       # Generate response using OpenAI
@@ -98,6 +107,19 @@ class TelegramBotService
 
     def extract_text(message)
       message.text || message.caption || ''
+    end
+
+    def extract_sender_name(from_user)
+      return nil unless from_user
+
+      # Build full name from first_name + last_name
+      if from_user.first_name.present?
+        full_name = from_user.first_name
+        full_name += " #{from_user.last_name}" if from_user.last_name.present?
+        full_name
+      else
+        nil
+      end
     end
 
     def extract_topic_name(message)
