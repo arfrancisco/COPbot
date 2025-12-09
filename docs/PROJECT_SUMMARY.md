@@ -74,6 +74,7 @@ A complete, production-ready Ruby on Rails 7 API application that powers an AI-e
 - ✅ Comprehensive README.md
 - ✅ QUICKSTART.md (10-minute setup)
 - ✅ DEPLOYMENT_CHECKLIST.md
+- ✅ QUERY_LOGGING_IMPLEMENTATION.md
 - ✅ Inline code documentation
 - ✅ Environment variable examples
 
@@ -238,14 +239,14 @@ The application is production-ready when:
 
 Choose your path:
 
-1. **Quick Start** (10 minutes): See `QUICKSTART.md`
-2. **Local Development**: Follow `README.md` setup section
+1. **Quick Start** (10 minutes): See [QUICKSTART.md](./QUICKSTART.md)
+2. **Local Development**: Follow [../README.md](../README.md) setup section
 3. **Docker Development**: Use `docker-compose up`
-4. **Production Deployment**: Follow `DEPLOYMENT_CHECKLIST.md`
+4. **Production Deployment**: Follow [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md)
 
 ## Support & Maintenance
 
-- **Documentation**: README.md, QUICKSTART.md, inline comments
+- **Documentation**: [README.md](./README.md), [QUICKSTART.md](./QUICKSTART.md), inline comments
 - **Testing**: Run `bundle exec rspec`
 - **Debugging**: Rails console, Heroku logs
 - **Updates**: Standard `bundle update` workflow

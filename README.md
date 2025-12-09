@@ -307,14 +307,14 @@ cutoff_date = 30.days.ago  # Change from 90 to 30 days
 
 Edit `app/services/telegram_bot_service.rb`:
 ```ruby
-results = SearchService.search(query, limit: 15)  # Change from 8
+results = SearchService.search(query, limit: 30)  # Change from 25
 ```
 
 ### Change OpenAI model
 
-Edit `app/services/telegram_bot_service.rb`:
+Edit `app/services/open_ai_service.rb`:
 ```ruby
-model: 'gpt-4o'  # Upgrade from gpt-4o-mini
+model: 'gpt-4o-mini'  # Or use gpt-4o for better quality (higher cost)
 ```
 
 ## Contributing
@@ -334,8 +334,24 @@ MIT License - feel free to use this for your projects!
 For issues and questions:
 - Create an issue in the repository
 - Check existing issues for solutions
+- Review [documentation](docs/README.md) for detailed guides
 - Review Telegram Bot API docs: https://core.telegram.org/bots/api
 - Review OpenAI API docs: https://platform.openai.com/docs
+
+## Documentation
+
+Comprehensive documentation is available in the [docs/](docs/) folder:
+
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)** - Quick 10-minute setup guide
+- **[docs/TELEGRAM_GROUP_SETUP.md](docs/TELEGRAM_GROUP_SETUP.md)** - How to set up the bot in groups
+- **[docs/HEROKU_DEPLOY.md](docs/HEROKU_DEPLOY.md)** - Heroku deployment guide
+- **[docs/DEPLOYMENT_CHECKLIST.md](docs/DEPLOYMENT_CHECKLIST.md)** - Pre-deployment checklist
+- **[docs/PROJECT_SUMMARY.md](docs/PROJECT_SUMMARY.md)** - Technical overview
+- **[docs/QUERY_LOGGING_IMPLEMENTATION.md](docs/QUERY_LOGGING_IMPLEMENTATION.md)** - Query logging system
+- **[docs/CHANGELOG.md](docs/CHANGELOG.md)** - Version history
+- **[docs/STATUS.md](docs/STATUS.md)** - Project completion status
+
+See [docs/README.md](docs/README.md) for the complete documentation index.
 
 ## Roadmap
 

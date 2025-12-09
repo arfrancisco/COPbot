@@ -93,20 +93,26 @@ The bot should respond with a welcome message.
 The bot should show available commands.
 
 ```
-/ask What did we discuss earlier?
+@YourBotName What did we discuss earlier?
 ```
-The bot should search stored messages and respond (if messages exist).
+Mention the bot with your question. The bot should search stored messages and respond (if messages exist).
 
-## Step 5: Verify Background Jobs
+## Step 5: Verify Message Processing
 
-Check that the worker is processing messages:
+Check that messages are being processed:
 
 ```bash
-# View worker logs
-docker-compose logs -f worker
+# View bot logs
+docker-compose logs -f bot
 
-# Check Sidekiq dashboard
-# Open http://localhost:3000/sidekiq in your browser
+# Check Rails console
+docker-compose exec web rails console
+
+# In console, check message count:
+Message.count
+
+# View recent messages:
+Message.order(message_timestamp: :desc).limit(5)
 ```
 
 ## Architecture Overview
@@ -116,9 +122,7 @@ Telegram Group Message
   ↓
 Bot (listens for messages)
   ↓
-Enqueues StoreChannelMessageJob
-  ↓
-Worker (Sidekiq)
+StoreChannelMessageJob (processes immediately)
   ↓
 Generates embedding (OpenAI)
   ↓
@@ -151,23 +155,24 @@ docker-compose up -d
 
 ### Messages aren't being stored
 
-Check worker logs:
+Check logs for errors:
 
 ```bash
-docker-compose logs -f worker
+docker-compose logs -f bot
 ```
 
-Verify Redis is running:
+Verify database connection:
 
 ```bash
-docker-compose ps redis
+docker-compose ps
 ```
 
 ### Bot doesn't respond to commands
 
-- ✅ Commands must start with `/` (e.g., `/ask`, not `ask`)
+- ✅ Commands must start with `/` (e.g., `/start`, not `start`)
+- ✅ In groups, you must mention the bot: `@YourBotName question`
 - ✅ Check bot logs for errors: `docker-compose logs -f bot`
-- ✅ For `/ask`, make sure there are stored messages in the database
+- ✅ Make sure there are stored messages in the database
 
 ## Multiple Groups
 
@@ -206,7 +211,20 @@ Message.order(created_at: :desc).limit(5).pluck(:text, :channel_id)
 
 ### Monitor jobs
 
-Visit the Sidekiq dashboard: http://localhost:3000/sidekiq
+Visit the Rails console to check message processing:
+
+```bash
+docker-compose exec web rails console
+
+# Count messages
+Message.count
+
+# View recent messages
+Message.order(created_at: :desc).limit(5).pluck(:text, :channel_id)
+
+# Check query logs
+UserQuery.recent.limit(10)
+```
 
 ## Cleanup
 
@@ -228,11 +246,12 @@ Message.where(channel_id: YOUR_GROUP_ID).delete_all
 |---------|-------------|
 | `/start` | Show welcome message |
 | `/help` | Show help and available commands |
-| `/ask <question>` | Ask a question based on stored messages |
+| `@BotName question` | Ask a question in groups (mention bot) |
+| Direct message | Ask questions in private chat |
 
 ## Next Steps
 
 - Add more groups to capture messages from multiple sources
-- Use `/ask` to query across all stored conversations
-- Monitor the Sidekiq dashboard for job processing
-- Set up the scheduled job to delete old messages (90 days)
+- Use the bot to query across all stored conversations
+- Monitor query logs via Rails console
+- Set up the scheduled job to delete old messages (90 days) - see [../README.md](../README.md)

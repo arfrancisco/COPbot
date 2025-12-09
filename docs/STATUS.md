@@ -89,11 +89,13 @@
 
 ✅ Telegram channel message indexing
 ✅ OpenAI embeddings (text-embedding-3-small, 1536d)
-✅ Semantic search with pgvector
-✅ RAG pattern with GPT-4o-mini
+✅ Semantic search with pgvector HNSW indexing
+✅ RAG pattern with GPT-4o
 ✅ Multilingual support (English, Filipino, Taglish)
 ✅ 90-day message retention
-✅ Background job processing
+✅ Immediate message processing
+✅ Query logging and analytics
+✅ Sender information tracking
 ✅ Comprehensive error handling
 ✅ Full test suite
 ✅ Docker development environment
@@ -163,10 +165,11 @@ heroku ps:scale web=1 bot=1
 
 ## Support
 
-- See `README.md` for full documentation
+- See `README.md` in docs folder for full documentation
 - Check `QUICKSTART.md` for quick setup
 - Review `DEPLOYMENT_CHECKLIST.md` for production
 - Read `PROJECT_SUMMARY.md` for architecture details
+- See `QUERY_LOGGING_IMPLEMENTATION.md` for analytics
 
 ---
 

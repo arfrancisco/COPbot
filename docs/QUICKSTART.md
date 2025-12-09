@@ -65,19 +65,19 @@ Bot connected successfully!
 
 1. In your channel, post a message
 2. Open a private chat with your bot
-3. Send: `/ask What was said in the channel?`
+3. Send your question directly (no `/ask` needed in private chat)
 4. The bot should respond with information from your channel!
 
 ## Example Conversation
 
 ```
 You: /start
-Bot: Welcome! I'm your AI concierge. Use /ask followed by your question...
+Bot: Welcome! I'm your AI concierge...
 
-You: /ask How do I reset my password?
+You: How do I reset my password?
 Bot: Based on the channel messages, you can reset your password by...
 
-You: /ask Paano mag-login?
+You: Paano mag-login?
 Bot: Base sa mga mensahe, maaari kang mag-login sa pamamagitan ng...
 ```
 
@@ -118,15 +118,16 @@ docker-compose exec web bundle exec rake db:migrate
 
 ## Next Steps
 
-- Review the full README.md for advanced configuration
-- Set up Heroku deployment for production use
-- Customize the bot responses in `app/services/telegram_bot_service.rb`
+- Review the full [../README.md](../README.md) for advanced configuration
+- Set up Heroku deployment for production use (see [HEROKU_DEPLOY.md](./HEROKU_DEPLOY.md))
+- Customize the bot responses in `app/services/open_ai_service.rb`
 - Add more channels to index
 
 ## Getting Help
 
-- Check `README.md` for detailed documentation
-- Review `DEPLOYMENT_CHECKLIST.md` for production deployment
+- Check [README.md](./README.md) for documentation index
+- Review [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md) for production deployment
+- See [../README.md](../README.md) for troubleshooting
 - Open an issue if you encounter problems
 
 ---
