@@ -14,7 +14,7 @@ class Message < ApplicationRecord
   scope :ordered, -> { order(message_timestamp: :desc) }
 
   # Class methods
-  def self.search_by_embedding(query_embedding, limit: 10, max_distance: 0.8, query_text: nil)
+  def self.search_by_embedding(query_embedding, limit: 10, max_distance: 1.2, query_text: nil)
     # Use pgvector for FAST cosine similarity search with pure relevance-based ranking
     # This is 100x+ faster than the old JSONB approach
 
@@ -22,15 +22,16 @@ class Message < ApplicationRecord
     STDOUT.flush
 
     # Extract keywords from query for hybrid search
+    # No stop word filtering to support Filipino/Tagalog and Taglish queries
     keywords = query_text&.downcase&.split(/\s+/) || []
 
     # Use pgvector's nearest_neighbors method for lightning-fast search
     # Fetch significantly more results initially to ensure best relevance across entire history
     # Cosine distance ranges from 0 (identical) to 2 (opposite)
-    # Distance < 0.3 = very similar, < 0.5 = similar, < 0.8 = somewhat similar
+    # Distance < 0.3 = very similar, < 0.5 = similar, < 0.8 = somewhat similar, < 1.2 = possibly relevant
     candidates = Message
       .nearest_neighbors(:embedding_vector, query_embedding, distance: "cosine")
-      .limit(limit * 10)  # Get 10x limit to cast a wider net across entire history
+      .limit(limit * 15)  # Get 15x limit to cast an even wider net for more heuristic search
       .to_a
 
     # Hybrid scoring: combine semantic similarity with keyword matching
@@ -44,6 +45,8 @@ class Message < ApplicationRecord
       keyword_score = 0.0
       if keywords.any?
         text_lower = msg.text.downcase
+        
+        # Count full keyword matches
         matched_keywords = keywords.count { |kw| text_lower.include?(kw) }
         keyword_score = (matched_keywords.to_f / keywords.length) * 0.8  # Up to 80% boost for keyword matches
 
@@ -56,6 +59,14 @@ class Message < ApplicationRecord
         # (helps surface detailed documents that mention the topic)
         if matched_keywords > 0 && msg.text.length > 500
           keyword_score += 0.6
+        end
+        
+        # Partial word matching - helps with plurals, verb forms, etc.
+        partial_matches = keywords.count do |kw|
+          text_lower.split(/\s+/).any? { |word| word.start_with?(kw) || kw.start_with?(word) }
+        end
+        if partial_matches > matched_keywords
+          keyword_score += (partial_matches - matched_keywords).to_f / keywords.length * 0.3
         end
       end
 

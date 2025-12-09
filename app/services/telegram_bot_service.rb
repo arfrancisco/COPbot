@@ -47,7 +47,7 @@ class TelegramBotService
       STDOUT.flush
 
       # Search for relevant messages with more results for better context
-      results = SearchService.search(query, limit: 20)
+      results = SearchService.search(query, limit: 25)
 
       puts "📊 Search returned #{results.length} results"
       STDOUT.flush
@@ -61,10 +61,16 @@ class TelegramBotService
         puts "📈 Total messages in database: #{total_messages}"
         STDOUT.flush
 
+        response_text = if total_messages == 0
+          "I don't have any messages indexed yet. Make sure I'm added to the channels you want me to search."
+        else
+          "I couldn't find any relevant messages about that. Try rephrasing your question or asking about something else!"
+        end
+
         bot.api.send_message(
           chat_id: message.chat.id,
           reply_to_message_id: message.message_id,
-          text: "I couldn't find any relevant information about that."
+          text: response_text
         )
         return
       end
@@ -73,10 +79,19 @@ class TelegramBotService
       STDOUT.flush
 
       # Build context from search results with metadata
+      # Include similarity hints to help the AI understand relevance
       context = results.map.with_index do |msg, idx|
         timestamp = msg.message_timestamp.strftime("%b %d, %Y")
         sender = msg.sender_display_name
-        "[Message #{idx + 1}] From: #{sender} (#{timestamp} - #{msg.channel_name}):\n#{msg.text}"
+        # Note: neighbor_distance is available from the search if we're within a search context
+        relevance_note = if idx < 5
+          "(highly relevant)"
+        elsif idx < 10
+          "(relevant)"
+        else
+          "(possibly relevant)"
+        end
+        "[Message #{idx + 1}] #{relevance_note} From: #{sender} (#{timestamp} - #{msg.channel_name}):\n#{msg.text}"
       end.join("\n\n---\n\n")
 
       # Generate response using OpenAI
