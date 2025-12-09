@@ -54,11 +54,33 @@ class OpenAiService
         }
       )
 
-      response.dig('choices', 0, 'message', 'content') || 'No answer generated.'
+      response_text = response.dig('choices', 0, 'message', 'content') || 'No answer generated.'
+      
+      # Extract token usage information from the response
+      usage = response.dig('usage') || {}
+      
+      {
+        response: response_text,
+        usage: {
+          prompt_tokens: usage['prompt_tokens'],
+          completion_tokens: usage['completion_tokens'],
+          total_tokens: usage['total_tokens']
+        },
+        model: 'gpt-4o',
+        temperature: 0.7,
+        max_tokens: 1500
+      }
     rescue StandardError => e
       Rails.logger.error("Error generating response: #{e.message}")
       Rails.logger.error(e.backtrace.first(5).join("\n"))
-      "Sorry, I couldn't generate a response at this time. Error: #{e.message}"
+      
+      {
+        response: "Sorry, I couldn't generate a response at this time. Error: #{e.message}",
+        error: e,
+        model: 'gpt-4o',
+        temperature: 0.7,
+        max_tokens: 1500
+      }
     end
   end
 end

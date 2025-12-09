@@ -46,6 +46,14 @@ class TelegramBotService
       puts "🔍 Processing query: '#{query}'"
       STDOUT.flush
 
+      # Start logging the query
+      query_log = QueryLoggerService.start_query(
+        query_text: query,
+        telegram_user_id: message.from&.id,
+        telegram_chat_id: message.chat.id,
+        username: extract_sender_name(message.from)
+      )
+
       # Search for relevant messages with more results for better context
       results = SearchService.search(query, limit: 25)
 
@@ -66,6 +74,14 @@ class TelegramBotService
         else
           "I couldn't find any relevant messages about that. Try rephrasing your question or asking about something else!"
         end
+
+        # Log the response (even though no search results)
+        QueryLoggerService.complete_query(query_log,
+          response_text: response_text,
+          model: 'gpt-4o',
+          temperature: 0.7,
+          max_tokens: 1500
+        )
 
         bot.api.send_message(
           chat_id: message.chat.id,
@@ -94,14 +110,45 @@ class TelegramBotService
         "[Message #{idx + 1}] #{relevance_note} From: #{sender} (#{timestamp} - #{msg.channel_name}):\n#{msg.text}"
       end.join("\n\n---\n\n")
 
+      # Log search context
+      QueryLoggerService.add_search_context(query_log,
+        results: results,
+        search_query: query,
+        context_text: context
+      )
+
       # Generate response using OpenAI
-      response = OpenAiService.generate_response(query, context)
+      ai_response = OpenAiService.generate_response(query, context)
+
+      # Handle response based on whether it's a hash (new format) or string (error fallback)
+      response_text = ai_response.is_a?(Hash) ? ai_response[:response] : ai_response
+      
+      # Log the completion with token usage
+      if ai_response.is_a?(Hash) && !ai_response[:error]
+        QueryLoggerService.complete_query(query_log,
+          response_text: response_text,
+          model: ai_response[:model],
+          temperature: ai_response[:temperature],
+          max_tokens: ai_response[:max_tokens],
+          usage: ai_response[:usage]
+        )
+      elsif ai_response.is_a?(Hash) && ai_response[:error]
+        QueryLoggerService.log_error(query_log, ai_response[:error])
+      else
+        # Legacy string response
+        QueryLoggerService.complete_query(query_log,
+          response_text: response_text,
+          model: 'gpt-4o',
+          temperature: 0.7,
+          max_tokens: 1500
+        )
+      end
 
       # Send response back to user as a reply
       bot.api.send_message(
         chat_id: message.chat.id,
         reply_to_message_id: message.message_id,
-        text: response
+        text: response_text
       )
     rescue StandardError => e
       Rails.logger.error("Error processing user query: #{e.message}")
@@ -110,6 +157,9 @@ class TelegramBotService
       puts "❌ Error processing query: #{e.message}"
       puts e.backtrace.first(5).join("\n")
       STDOUT.flush
+
+      # Log the error
+      QueryLoggerService.log_error(query_log, e) if query_log
 
       bot.api.send_message(
         chat_id: message.chat.id,
