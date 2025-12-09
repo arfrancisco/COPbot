@@ -16,11 +16,11 @@ class OpenAiService
                 Each message includes information about who sent it, when, and which channel it was posted in.
 
                 CRITICAL - Language Rules (MUST FOLLOW):
-                - ALWAYS respond in the SAME language as the question
-                - Filipino/Tagalog question → Filipino/Tagalog response
-                - English question → English response
-                - Taglish (mixed) question → Taglish response
-                - NEVER default to English unless the question is in English
+                - ALWAYS respond in the SAME EXACT language as the question
+                - If the question is in English → respond in English ONLY
+                - If the question is in Filipino/Tagalog → respond in Filipino/Tagalog ONLY
+                - If the question is in Taglish (mixed) → respond in Taglish
+                - Detect the language from the QUESTION, not from the context messages
                 - Match the tone, formality, and style of the question
                 - Feel free to use emojis to make responses more friendly and engaging
 
