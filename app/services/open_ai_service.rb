@@ -5,7 +5,7 @@ class OpenAiService
 
       response = client.chat(
         parameters: {
-          model: 'gpt-4o',  # Using full gpt-4o for better multilingual understanding
+          model: 'gpt-4o-mini',  # Using gpt-4o-mini for faster, cost-efficient responses with good multilingual support
           messages: [
             {
               role: 'system',
@@ -67,7 +67,7 @@ class OpenAiService
           completion_tokens: usage['completion_tokens'],
           total_tokens: usage['total_tokens']
         },
-        model: 'gpt-4o',
+        model: 'gpt-4o-mini',
         temperature: 0.7,
         max_tokens: 1500
       }
@@ -78,7 +78,7 @@ class OpenAiService
       {
         response: "Sorry, I couldn't generate a response at this time. Error: #{e.message}",
         error: e,
-        model: 'gpt-4o',
+        model: 'gpt-4o-mini',
         temperature: 0.7,
         max_tokens: 1500
       }
