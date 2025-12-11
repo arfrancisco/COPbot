@@ -97,7 +97,7 @@ class TelegramBotService
       # Build context from search results with metadata
       # Include similarity hints to help the AI understand relevance
       context = results.map.with_index do |msg, idx|
-        timestamp = msg.message_timestamp.strftime("%b %d, %Y")
+        timestamp = msg.message_timestamp.in_time_zone('Asia/Manila').strftime("%b %d, %Y at %I:%M %p")
         sender = msg.sender_display_name
         # Note: neighbor_distance is available from the search if we're within a search context
         relevance_note = if idx < 5
@@ -122,7 +122,7 @@ class TelegramBotService
 
       # Handle response based on whether it's a hash (new format) or string (error fallback)
       response_text = ai_response.is_a?(Hash) ? ai_response[:response] : ai_response
-      
+
       # Log the completion with token usage
       if ai_response.is_a?(Hash) && !ai_response[:error]
         QueryLoggerService.complete_query(query_log,

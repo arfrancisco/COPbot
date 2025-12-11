@@ -29,6 +29,7 @@ module TelegramBotApp
     # in config/environments, which are processed later.
     #
     # config.time_zone = "Central Time (US & Canada)"
+    config.time_zone = "Asia/Manila"
     # config.eager_load_paths << Rails.root.join("extras")
 
     # Only loads a smaller set of middleware suitable for API only apps.
@@ -40,4 +41,3 @@ module TelegramBotApp
     config.active_job.queue_adapter = :async
   end
 end
-
