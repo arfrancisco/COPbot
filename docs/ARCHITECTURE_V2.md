@@ -52,7 +52,45 @@ proactive messages, and calendar events with reminders.
 
 ## 3. Storage: four layers
 
-Postgres + pgvector throughout. No new infrastructure.
+Postgres + pgvector throughout. No new infrastructure. Four tables, because four different kinds of
+question need four different lookups.
+
+### 3.0 The mental model
+
+**Two of the layers are written by people. Two are computed from them.**
+
+| | Layer | Written by | If you deleted it |
+|---|---|---|---|
+| **1** | `messages` | Users, via Telegram | Unrecoverable — this is the record |
+| **2** | `conversation_chunks` | A background job, from layer 1 | Re-run the chunker |
+| **3** | `facts` | A background job, from layer 2 | Re-run the extractor |
+| **4** | `events` / `reminders` | Users, via the bot's tools | Unrecoverable — nobody can re-derive an intention |
+
+Layers 2 and 3 are **indexes**. They exist only to make layer 1 searchable, they hold no information
+that isn't already in layer 1, and they can be thrown away and rebuilt whenever the chunking or
+extraction strategy changes. That's the property v1 lacked: v1's embeddings *were* the storage, so
+changing strategy meant re-processing with no ground truth to re-process from.
+
+Layer 4 is different in kind. "Remind us about the vet visit at 10am" is not a fact recoverable from
+the transcript — it's a commitment someone made. It gets backed up and retained like layer 1, not
+discarded like an index.
+
+```mermaid
+flowchart TD
+    TG["Telegram"] -->|"insert, no AI"| M["<b>1. messages</b><br/>raw log · source of truth"]
+    M -->|"ChunkConversationsJob<br/>every 5 min"| C["<b>2. conversation_chunks</b><br/>transcript + summary + vector"]
+    C -->|"ExtractFactsJob<br/>nightly"| F["<b>3. facts</b><br/>durable knowledge, versioned"]
+    U["User asks the bot<br/>@copbot remind us…"] -->|"create_event tool"| E["<b>4. events / reminders</b><br/>structured, timestamped"]
+
+    M -.->|"recent window,<br/>verbatim"| Q(["Prompt"])
+    C -.->|"hybrid search"| Q
+    F -.->|"all active facts"| Q
+    E -.->|"list_events tool"| Q
+```
+
+The dotted lines are read paths at query time. Note that **layer 1 is read directly** — recent
+messages go into the prompt verbatim without passing through any index. That's the fix for v1's
+headline failure.
 
 ### 3.1 Layer 1 — `messages` (raw log)
 
@@ -174,6 +212,153 @@ reminders
 
 All timestamps stored UTC, rendered `Asia/Manila`. (PH has no DST, but store the tz name anyway so
 this doesn't become a rewrite if the community ever spans zones.)
+
+---
+
+### 3.5 Worked example — one evening, all four layers
+
+A real-shaped conversation in the **Tower B Feeding** topic, Wed 2 Sep 2026. Times shown in Manila.
+
+```
+7:02 PM  Maria  Guys si Mingming parang may sugat sa paa
+7:03 PM  Maria  [photo] Yung likod na paa
+7:05 PM  John   Yikes. Kanina pa ba?
+7:06 PM  Maria  Since this morning yata
+7:08 PM  Lisa   Better dalhin sa vet. Prisma Vet on Shaw is open till 8
+7:09 PM  John   I can take her tomorrow morning, 10am ok?
+7:10 PM  Maria  Sige salamat John!
+7:11 PM  Lisa   @copbot remind us about Mingming's vet visit tomorrow 10am
+         ⋯ silence ⋯
+9:45 PM  John   Btw nakita ko yung kitten sa parking, ok naman
+```
+
+#### Layer 1 — `messages`: nine rows, written instantly
+
+Each message is one `INSERT`, the moment it arrives. No embedding, no LLM call, nothing that can
+fail slowly. Three of the nine rows:
+
+| id | channel_id | sender_name | text | message_timestamp | reply_to | chunk_id |
+|---|---|---|---|---|---|---|
+| 1041 | `-100123_7` | Maria | `Guys si Mingming parang may sugat sa paa` | `2026-09-02 11:02Z` | — | `NULL` |
+| 1045 | `-100123_7` | Lisa | `Better dalhin sa vet. Prisma Vet on Shaw is open till 8` | `2026-09-02 11:08Z` | 1041 | `NULL` |
+| 1049 | `-100123_7` | John | `Btw nakita ko yung kitten sa parking, ok naman` | `2026-09-02 13:45Z` | — | `NULL` |
+
+`chunk_id` is `NULL` on every row at write time — that's the chunker's to-do list.
+
+#### Layer 2 — `conversation_chunks`: the chunker runs at 7:25 PM
+
+`ChunkConversationsJob` wakes every 5 minutes and scans for messages with `chunk_id IS NULL`. At
+7:25 PM it finds all nine and walks them in time order looking for gaps over `CHUNK_GAP_MINUTES`
+(12):
+
+- Messages 1041–1048 (7:02→7:11) have no internal gap over 12 min. The gap *after* 1048 is 2h34m,
+  so **that segment is closed** — safe to seal.
+- Message 1049 (9:45 PM) is the start of a segment whose gap hasn't elapsed yet — someone may still
+  be typing. **Left alone**, still `chunk_id IS NULL`, picked up on a later run.
+
+One chunk row is written for the sealed segment:
+
+| column | value |
+|---|---|
+| `id` | 312 |
+| `channel_id` / `channel_name` | `-100123_7` / `Tower B Feeding` |
+| `started_at` / `ended_at` | `11:02Z` / `11:11Z` |
+| `message_count` | 8 |
+| `participants` | `{Maria, John, Lisa}` |
+| `message_ids` | `{1041,…,1048}` |
+| `transcript` | `Maria (7:02 PM): Guys si Mingming parang may sugat sa paa`<br/>`Maria (7:03 PM): [photo] Yung likod na paa`<br/>`John (7:05 PM): Yikes. Kanina pa ba?`<br/>… all 8 lines … |
+| `summary` | *"Maria reported Mingming has a wound on her back paw, noticed that morning. Lisa recommended Prisma Vet on Shaw (open until 8 PM). John volunteered to bring her the next day at 10 AM."* |
+| `topics` | `{mingming, injury, vet, prisma-vet}` |
+| `embedding` | `vector(1536)` — **of the summary**, not the transcript |
+| `tsv` | `tsvector` over summary + transcript |
+
+Then `UPDATE messages SET chunk_id = 312 WHERE id IN (1041..1048)` — so every message knows its
+chunk and the next scan skips them.
+
+**Two things to notice.** First, the summary is what gets embedded and the transcript is what gets
+*read* — that's the parent-document pattern. "Yikes. Kanina pa ba?" has a nearly meaningless vector
+on its own; as part of a summary about a cat's injured paw it's findable. Second, the chunk holds no
+new information — delete all chunks and re-run the job and you get them back from `messages`.
+
+#### Layer 3 — `facts`: the nightly job finds durable knowledge
+
+`ExtractFactsJob` reads chunks created since its last run and asks: *is anything here true beyond
+this conversation?* From chunk 312 it extracts one:
+
+| statement | category | subject | source_chunk_ids | valid_from | superseded_by_id |
+|---|---|---|---|---|---|
+| `Prisma Vet on Shaw is the clinic the community uses; open until 8 PM` | `contact` | `vet_clinic` | `{312}` | `2026-09-02` | `NULL` |
+
+Mingming's injury is *not* extracted — it's an event in time, not durable knowledge. The distinction
+the extractor is asked to draw is "will this still be true next month?"
+
+**Supersession in action.** If a fact already existed with `subject: vet_clinic` reading *"Prisma
+Vet on Shaw, open until 6 PM"*, the extractor doesn't overwrite or delete it. It sets
+`superseded_by_id` on the old row pointing at the new one. Queries read `WHERE superseded_by_id IS
+NULL`, so the bot answers with the current hours — but the history of what the community believed,
+and when, survives. This is what stops semantic memory rotting into a pile of contradictions.
+
+#### Layer 4 — `events` / `reminders`: written by Lisa's request, not by inference
+
+Lisa's 7:11 PM message tags the bot, so the agent runs and calls `create_event`:
+
+| id | title | starts_at | timezone | category | status | source_message_id | channel_id |
+|---|---|---|---|---|---|---|---|
+| 88 | `Mingming's vet visit` | `2026-09-03 02:00Z` | `Asia/Manila` | `vet` | `confirmed` | 1048 | `-100123_7` |
+
+`02:00Z` is 10:00 AM Manila — stored UTC, rendered local. The bot's reply states the resolved date
+(*"Thu Sep 3, 10:00 AM"*) so a misparse is caught now rather than at reminder time.
+
+Default reminder offsets are T-1 day and T-2 hours. T-1 day lands at 10 AM *today*, already past, so
+it's skipped — only one row is written:
+
+| id | event_id | deliver_at | status | dedupe_key |
+|---|---|---|---|---|
+| 141 | 88 | `2026-09-03 00:00Z` | `pending` | `event:88:offset:-2h` |
+
+At 8:00 AM Manila, `DeliverDueRemindersJob` claims it with `FOR UPDATE SKIP LOCKED`, posts to the
+channel, and stamps `delivered_at`. The `dedupe_key` unique index is what makes a double-send
+impossible even if two workers race.
+
+Note the event was written because **someone asked** — nothing in Maria and John's exchange at
+7:09 ("I can take her tomorrow morning, 10am ok?") creates anything, even though it describes the
+same appointment. That's §6's explicit-only rule.
+
+#### Query time — the same subject, two different lookups
+
+**Thu 3 Sep, 8:30 AM. *"Anong oras yung vet ni Mingming?"***
+
+Always-injected context already contains the current time, the active facts, and the last 8 hours of
+messages. The agent calls `list_events(from: today, to: +7d)` → row 88 → *"10:00 AM today, si John
+ang maghahatid."* **No vector search happened.** A timestamp question was answered by a timestamp
+column, which is the entire point of keeping layer 4 separate.
+
+**Thu 17 Sep, two weeks later. *"Anong nangyari kay Mingming nung nasugatan siya?"***
+
+Now it's outside the recency window and there's no event to look up. The agent calls
+`search_conversations("Mingming sugat paa")`:
+
+1. Vector search over `conversation_chunks.embedding` — the query embedding is close to chunk 312's
+   summary vector.
+2. Full-text search over `conversation_chunks.tsv` — `Mingming` is an exact token match, the thing
+   embeddings are worst at.
+3. RRF fuses both rankings; chunk 312 ranks top on both.
+4. The agent receives **the full 8-line transcript**, not the summary — so it can answer with who
+   said what, and cite Lisa and John by name.
+
+Same subject, two questions, two completely different retrieval paths. One vector index could not
+have served both — which is the argument for four layers rather than one table.
+
+#### Timeline summary
+
+| When | What is written | Cost |
+|---|---|---|
+| Message arrives | 1 row in `messages` | one `INSERT` |
+| User tags the bot | rows in `events` + `reminders` | one agent turn |
+| Every 5 min | chunk rows for segments that have gone quiet | 1 summary + 1 embedding per chunk |
+| Nightly | new/superseded `facts` rows | one pass over the day's chunks |
+| Every minute | `reminders.delivered_at` stamped | no model call |
+| Nightly, at 90 days | `messages` + orphaned chunks purged; facts and events kept | no model call |
 
 ---
 
