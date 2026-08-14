@@ -591,9 +591,160 @@ Trace v1's headline bug through the new path: someone asks about a decision made
 
 The failure modes that remain are real but different in kind, and each is caught by a specific eval
 category in §8: retrieval misses something genuinely old (`multi_hop`, measured by recall@k), or the
-model confabulates when nothing was found (`refusal`).
+model confabulates when nothing was found (`refusal`), or the question asks for aggregate current
+state (`aggregate_state` — see the next section, which is the hard one).
 
-### 4.6 Model selection — two independent choices
+### 4.6 The hard case: *"ano na kailangan nating bilhin?"*
+
+This is a **known v1 failure** and the most dangerous query class in the system, because when it
+fails it fails *confidently* — a plausible, well-cited, wrong answer. It deserves its own design
+treatment.
+
+#### Why it's structurally harder than every other query
+
+| Property | Consequence |
+|---|---|
+| No distinctive keywords | "buy" appears as *bili, bilhin, bumili, order, restock, ubos na, kulang, wala na* — nothing to match on |
+| The answer is scattered | 5+ messages across 5 weeks and 3 channels; **no single chunk contains it** |
+| It's a synthesis, not a lookup | Every other query type finds a passage; this one aggregates state |
+| **Later messages invalidate earlier ones** | ← the killer |
+
+That last row is what makes it different in kind. For every other question, missing a document means
+an *incomplete* answer. Here, retrieving *"we're low on litter"* while missing *"nabili ko na yung
+litter"* produces an **actively wrong** answer. Recall isn't just about completeness — a missed
+rebuttal inverts the result.
+
+#### A concrete corpus
+
+Five weeks of real-shaped traffic, today is Wed 17 Sep:
+
+| When | Channel | Message | |
+|---|---|---|---|
+| Aug 14 | Supplies | Pedro: *"Running low na yung dry food, baka 1 week na lang"* | ⚠️ need |
+| Aug 16 | Supplies | Maria: *"Nakabili ako ng 2 sacks kanina"* | ✅ **resolves Aug 14** |
+| Aug 28 | Tower B Feeding | Ana: *"Ubos na yung litter sa Tower B"* | ⚠️ need |
+| Sep 2 | Supplies | Lisa: *"May 3 sachets na lang yung wet food"* | ⚠️ need |
+| Sep 5 | General | John: *"Yung flea treatment ni Mingming, need pa ng isa pang dose next month"* | ⚠️ future |
+| Sep 10 | Supplies | Pedro: *"Nabili ko na yung litter"* | ✅ **resolves Aug 28, cross-channel** |
+| Sep 14 | Supplies | Maria: *"Yung deworming tablets wala na"* | ⚠️ need |
+
+The correct answer is **wet food** and **deworming tablets** now, **flea treatment** in October — and
+explicitly *not* dry food or litter. Note the trap in row 6: the need was raised in **Tower B
+Feeding** and resolved in **Supplies**. Any channel-scoped read of one channel alone gets it wrong in
+one direction or the other.
+
+#### Why plain hybrid search is not enough
+
+Run §4.3's query for *"kailangan bilhin ubos kulang"* and it returns the five ⚠️ chunks with high
+confidence — they're topically dead-on. The two ✅ resolutions rank *poorly*, because "nabili ko na"
+is semantically the **opposite** of "we need to buy". Top-5 truncation then discards them.
+
+Result: a fluent, cited, wrong answer listing dry food and litter. Exactly the v1 behaviour.
+
+There's a second-order problem too. The `simple` FTS config (§4.3) does no stemming, so
+`bilhin` ≠ `bili` ≠ `bumili` ≠ `nabili` — Tagalog morphology defeats the lexical retriever entirely
+on this query. The vector side is morphology-robust and covers it, which is a good illustration of
+*why* hybrid: FTS carries exact tokens (`Mingming`, `Whiskas`, `₱1,850`), embeddings carry
+morphology and paraphrase. Neither alone would do.
+
+#### The fix: exhaustive beats clever, at this scale
+
+The insight is a scale argument. **#Supplies is small.** At ~20 messages/day it's ~600 messages a
+month — roughly **15k tokens**. Against a 1M context window, reading the *entire channel* costs
+about 4 cents and is guaranteed complete. There is no ranking to lose a rebuttal to.
+
+So for aggregate-state questions the answer is: **stop searching, start sweeping.** Three changes.
+
+**1. Teach the tool when to sweep.** `get_messages_in_range` already exists; its *description* is
+what steers the model, so it must say so explicitly:
+
+> *Read every message in a channel over a time range, complete and in order. **Prefer this over
+> `search_conversations` when the question asks about current state** — what's needed, who's on
+> duty, what's outstanding — because a later message may resolve an earlier one and relevance
+> ranking can drop the resolution. Returns messages, not chunks.*
+
+**2. Sweep the obvious channel, search the others.** The two are complementary, not alternatives:
+
+```
+get_messages_in_range(channel: "Supplies", from: -45d)   → complete, catches every resolution
+search_conversations("ubos kulang kailangan bilhin", limit: 8)  → catches Ana's Tower B message
+```
+
+The sweep guarantees no resolution is missed in the channel where resolutions usually happen; the
+search reaches across channels for needs raised elsewhere. Together they cover the Aug 28 / Sep 10
+cross-channel trap that defeats either one alone.
+
+**3. Make reconciliation an explicit prompt rule.** Retrieval can hand over the right messages and
+the model can still get the reasoning wrong. In the system prompt:
+
+> *When answering about what is needed, outstanding, or pending: treat each request or shortage as
+> **open until you find a later message resolving it**. Scan forward in time from every need you
+> find. Report resolved items only if asked for history. If you cannot tell whether something was
+> resolved, say so rather than assuming either way.*
+
+**4. Return retrieved chunks in chronological order.** After RRF picks the top 5, sort those 5 by
+`started_at` before rendering. Ranking order is meaningless to the model and actively harmful here —
+reading the timeline in order is what makes "this was later resolved" visible. One `sort_by` call;
+no cost.
+
+#### What the loop then does
+
+*Turn 1* — recency window (8h) has nothing; facts give supplier preferences. The model recognises an
+aggregate-state question and issues the sweep plus the search, in parallel.
+
+*Turn 2* — it now holds every #Supplies message for 45 days plus cross-channel hits, all
+chronological. It walks the timeline: dry food ⚠️Aug 14 → ✅Aug 16, litter ⚠️Aug 28 → ✅Sep 10, wet
+food ⚠️Sep 2 → nothing after, deworming ⚠️Sep 14 → nothing after.
+
+> *"Base sa #Supplies at sa ibang channels, ito yung kailangan pa: 🛒*
+> *• **Wet food** — 3 sachets na lang, sabi ni @Lisa noong Sep 2*
+> *• **Deworming tablets** — wala na, sabi ni @Maria noong Sep 14*
+> *• **Flea treatment** para kay Mingming — kailangan ng isa pang dose sa October (@John, Sep 5)*
+>
+> *Yung dry food at cat litter ay nabili na — si @Maria noong Aug 16, si @Pedro noong Sep 10. 👍"*
+
+Naming the resolved items is deliberate: it shows its work, and if it got a resolution wrong someone
+in the channel can correct it immediately.
+
+#### Cost and limits
+
+The sweep roughly doubles this query's cost — ~$0.06 instead of ~$0.03. Acceptable, and it only
+applies to the aggregate-state class.
+
+**It does not scale indefinitely.** The sweep is affordable because #Supplies is ~20 messages/day. At
+10× that volume a 45-day sweep is 150k tokens and the argument breaks. Mitigations, in order of
+preference: shorten the window; cap the sweep by token budget and tell the model what was truncated
+(**never truncate silently** — a silent cut recreates the missed-rebuttal bug); and only then
+consider a derived state table.
+
+**A residual risk worth stating.** If a need is resolved *silently* — someone buys the litter and
+never mentions it — no architecture recovers that. The bot will report it as outstanding. The right
+behaviour is to attribute and date every claim (*"sabi ni @Lisa noong Sep 2"*) so a human can spot
+staleness, which the prompt rule above already produces.
+
+#### This is why `aggregate_state` is its own eval category
+
+It's the class where the system is most likely to be confidently wrong, so it needs the most
+explicit test. The golden-set entry asserts on **both** directions:
+
+```yaml
+- id: supplies_needed_with_resolutions
+  question: "Ano na kailangan nating bilhin?"
+  category: aggregate_state
+  expects:
+    must_retrieve_message_ids: [881, 884, 892, 897, 903, 910, 915]   # needs AND resolutions
+    must_contain: ["wet food", "deworming"]
+    must_not_contain: ["dry food", "litter"]     # ← the resolved traps; this is the real assertion
+    rubric: >
+      Lists exactly the unresolved needs. Does not list dry food or cat litter as needed.
+      Attributes each item to a person and a date.
+```
+
+`must_not_contain` is doing the heavy lifting. A recall-only metric would score the wrong answer
+*well*, because the wrong answer retrieves all the right need-messages — it just misses the
+rebuttals. This is the one eval category where precision matters more than recall.
+
+### 4.7 Model selection — two independent choices
 
 `gpt-4o-mini` is too weak for reliable multi-step tool use, and the whole design depends on it. The
 key structural fact that makes changing this cheap:
@@ -653,7 +804,7 @@ send 3–5, and RRF truncation at 5 is the cheap version of that last step. Add 
 the top 20 only if the Tier-1 eval numbers (§8.2) show recall@20 is good while recall@5 is not —
 that gap is the only evidence that reranking would earn its latency.
 
-### 4.7 Label context by *kind*, not just content
+### 4.8 Label context by *kind*, not just content
 
 ```
 ## RECENT ACTIVITY — last 8 hours, COMPLETE, nothing omitted
@@ -789,12 +940,22 @@ Deliberately cover the four question types that broke v1, plus the failure modes
 | `temporal` | "What happened in #supplies yesterday?" |
 | `structured` | "When's the next vet visit?" |
 | `multi_hop` | "Who volunteered last week and did they bring food?" |
+| **`aggregate_state`** | **"Ano na kailangan nating bilhin?" ← known v1 failure; see §4.6** |
 | `language` | Same question in EN / TL / Taglish → answer must match input language |
 | `refusal` | Question about something genuinely never discussed → must say so, not confabulate |
 | `safety` | "Cat is limping and won't eat" → must escalate to a vet |
 
-The `refusal` category matters more than it looks: a bot tuned only for recall learns to confabulate,
-and this is the only category that catches it.
+Two categories carry more weight than the rest.
+
+**`refusal`** — a bot tuned only for recall learns to confabulate, and this is the only category that
+catches it.
+
+**`aggregate_state`** — the only category where **precision matters more than recall**, and therefore
+the only one Tier-1 metrics alone will score wrongly. A wrong answer to *"what do we need to buy?"*
+retrieves every relevant need-message and scores well on recall@k; it's wrong because it *missed the
+rebuttals*. These entries must assert on `must_not_contain` (the resolved items) as hard as on
+`must_contain`, and they need enough corpus depth — a need, then its resolution weeks later in a
+different channel — to be a real test. See §4.6 for the design this category exists to police.
 
 ### 8.2 Three tiers, cheapest first
 
