@@ -44,7 +44,8 @@ proactive messages, and calendar events with reminders.
 | **Different questions need different lookups.** | The model chooses its retrieval via tool calls, rather than being handed one guess. |
 | **Recent context is free — spend it.** | Recent history is always injected verbatim, never made to compete for retrieval slots. |
 | **Structured facts belong in columns, not vectors.** | A vet appointment is a row with a timestamp. It is never retrieved by cosine similarity. |
-| **The bot never silently commits the community to anything.** | Ambient extraction produces *candidates*; creation requires confirmation. |
+| **The bot never silently commits the community to anything.** | Events are created only when a user explicitly asks; nothing is inferred from overheard chat. |
+| **The bot never posts unprompted, except on a schedule the community opted into.** | No confirmation prompts, no "did you mean…?"; only the digest and reminders people asked for. |
 | **If it isn't measured, it isn't tuned.** | An eval harness (§8) ships alongside the retrieval layer, not after it. |
 
 ---
@@ -206,10 +207,62 @@ a follow-up like *"and who was supposed to bring the carrier?"* needs a second r
 the first. Cost is 2–3 model round-trips instead of 1, which at this community's volume is
 immaterial.
 
-One caveat: `gpt-4o-mini` is weak at multi-step tool use. Plan to run the agent loop on a stronger
-model and keep mini for the cheap high-volume background work (chunk summaries, extraction).
+### 4.1 Model selection — two independent choices
 
-### 4.1 Retrieval mechanics
+`gpt-4o-mini` is too weak for reliable multi-step tool use, and the whole design depends on it. The
+key structural fact that makes changing this cheap:
+
+> **The completion provider and the embedding provider are independent.** Anthropic has no
+> embeddings endpoint at all, so "switch the agent to Claude" does not imply re-embedding anything.
+> The pgvector index, its 1536 dimensions, and the HNSW index stay exactly as they are.
+
+So the abstraction is **two adapters, not one**:
+
+```
+CompletionProvider   — agent loop, chunk summaries, fact extraction   (swappable)
+EmbeddingProvider    — chunk + fact vectors                            (effectively pinned)
+```
+
+**Embeddings: stay on OpenAI `text-embedding-3-large` @ 1536 dims.** It already works, the index is
+built around it, and changing embedding models means re-embedding the entire corpus and rebuilding
+the HNSW index for no measurable gain. This is the one place *not* to touch.
+
+**Completions: recommended split.**
+
+| Role | Model | Price (in/out per 1M) | Why |
+|---|---|---|---|
+| Agent loop | `claude-sonnet-5` | $3 / $15 | Strong tool use, 1M context, Ruby SDK ships a tool runner |
+| Background (summaries, fact extraction) | `claude-haiku-4-5` | $1 / $5 | Summarising a chat chunk is not hard; this is the high-volume path |
+| Escalation, if evals demand it | `claude-opus-5` | $5 / $25 | Only if the agent loop measurably fails at Sonnet |
+
+*(Sonnet 5 is at introductory $2/$10 through 2026-08-31 — budget against the standing $3/$15.)*
+
+Three practical notes for the Ruby side:
+
+- **Gem is `anthropic`, not `ruby-openai`.** Client is `Anthropic::Client.new`; it reads
+  `ANTHROPIC_API_KEY` from the environment like the current OpenAI client does.
+- **The SDK has a tool runner** (`client.beta.messages.tool_runner`, beta) that drives the
+  request → execute → loop cycle for us. Tools are `Anthropic::BaseTool` subclasses with an
+  `Anthropic::BaseModel` input schema — meaningfully less loop code than hand-rolling it. It is a
+  beta surface, so pin the gem version.
+- **Prompt caching is a real cost lever here.** Our prompt has a large stable prefix — system
+  prompt, channel roster, all active facts — followed by volatile content (current time, recent
+  messages, the question). Put a `cache_control` breakpoint at the end of the stable section and
+  cache reads cost ~0.1× input. The minimum cacheable prefix on Sonnet 5 is 1024 tokens, which our
+  system prompt alone already exceeds. **This requires the prompt to be ordered stable-first** —
+  worth designing in from the start rather than retrofitting, since interpolating the current
+  timestamp into the system prompt (as v1 does) invalidates the entire cache on every request.
+
+Two Claude-specific parameters worth setting deliberately rather than by default:
+`thinking: {type: "adaptive"}` with `output_config: {effort: ...}` replaces temperature-style
+tuning (Sonnet 5 rejects non-default `temperature`/`top_p`/`top_k` outright). Start the agent loop
+at `medium` effort and let the eval harness in §8 pick the level.
+
+**If staying on OpenAI is preferred**, the adapter split above still applies — swap only the
+completion adapter's implementation. The eval harness makes that an A/B rather than a guess, which
+is the main argument for building §8 before committing to a provider.
+
+### 4.2 Retrieval mechanics
 
 Inside `search_conversations`:
 
@@ -226,7 +279,7 @@ Inside `search_conversations`:
 Note for Tagalog/Taglish: Postgres has no Filipino FTS dictionary. Use the `simple` configuration
 (no stemming, no stop words) — mirroring v1's correct decision not to strip stop words.
 
-### 4.2 Label context by *kind*, not just content
+### 4.3 Label context by *kind*, not just content
 
 ```
 ## RECENT ACTIVITY — last 8 hours, COMPLETE, nothing omitted
@@ -249,7 +302,6 @@ Driven by `sidekiq-cron`:
 |---|---|---|
 | `ChunkConversationsJob` | every 5 min | Seal + embed quiet segments |
 | `DeliverDueRemindersJob` | every 1 min | Send due reminders |
-| `ExtractEventCandidatesJob` | every 30 min | Ambient event detection (§6) |
 | `ExtractFactsJob` | nightly | Distil/supersede semantic memory |
 | `DailyDigestJob` | 07:00 Manila | Today's schedule + yesterday's highlights |
 | `WeeklySummaryJob` | Sun 18:00 Manila | Week in review, open items |
@@ -266,28 +318,40 @@ Default reminder offsets per event: **T-1 day** and **T-2 hours**, configurable 
 
 ---
 
-## 6. Event & reminder capture
+## 6. Event & reminder capture — explicit only
 
-Two paths, deliberately asymmetric.
+**Decision: the bot only creates events when someone directly asks it to.** No ambient detection, no
+unprompted confirmation prompts, no candidate queue.
 
-**Explicit (high trust).** User tags the bot: *"@copbot remind us about the vet visit Tuesday 3pm."*
-The agent calls `create_event` + `create_reminder` via structured output (strict JSON schema,
-natural-language time normalised to ISO 8601 in `Asia/Manila`), then **echoes back what it created**
-and how to cancel it. Created directly as `status: confirmed`.
+The flow: a user tags the bot — *"@copbot remind us about the vet visit Tuesday 3pm"* — and the agent
+calls `create_event` + `create_reminder` via structured output (strict JSON schema, natural-language
+time normalised to ISO 8601 in `Asia/Manila`). It then **echoes back exactly what it created** and how
+to cancel. Rows are written directly as `status: confirmed`.
 
-**Ambient (low trust).** Someone mentions *"vet appointment Tuesday 3pm"* in chat without tagging the
-bot. Tempting to auto-create; don't. Silent extraction from group chat produces false positives, and
-a bot that invents commitments is worse than one that misses them.
+Why this is the right default here rather than a limitation:
 
-Instead `ExtractEventCandidatesJob` writes `status: candidate` rows with a confidence score:
+- **Zero false positives.** A bot that invents commitments the group never made is worse than one
+  that misses some — and in a small volunteer community, a wrong reminder costs social trust that a
+  missed one doesn't.
+- **Zero unprompted noise.** Nothing the bot posts is unsolicited.
+- **It's the smallest thing that can be evaluated.** Explicit creation is deterministic enough to
+  test properly; ambient extraction needs a labelled corpus of "was this really an event?" before
+  any confidence threshold means anything.
 
-- **High confidence** → one low-noise confirmation in-channel:
-  *"📅 Vet visit — Tue Sep 2, 3:00 PM. Want me to remind the group? 👍"* — a reaction or reply
-  confirms. No reply within 24h → stays a candidate, no further nagging.
-- **Lower confidence** → stored silently, surfaced only if someone asks *"anong meron this week?"*.
+**Still required, even with explicit-only:**
 
-**Dedup is mandatory.** A vet visit discussed five times must not create five events. Match
-candidates against existing events on `(fuzzy title, starts_at ± 2h, channel)` before inserting.
+- **Dedup.** Two people can both ask the bot to remind the group about the same vet visit. Match
+  against existing events on `(fuzzy title, starts_at ± 2h, channel)` before inserting, and tell the
+  second asker it's already scheduled.
+- **Cancellation and listing.** `/events` to list upcoming, and a way to cancel — otherwise a wrong
+  reminder is unfixable and fires anyway.
+- **Ambiguous time handling.** "Tuesday 3pm" with no date is *next* Tuesday; "3pm" today when it's
+  already 4pm is tomorrow. Resolve against Manila time and state the resolved date in the echo, so a
+  misparse is visible immediately rather than at reminder time.
+
+The `status: candidate` value stays in the schema (§3.4). Nothing writes it today; it costs nothing
+to keep, and it's the seam if ambient detection is ever wanted — the retrieval layer can already
+answer *"anong meron this week?"* from `events` without it.
 
 ---
 
@@ -304,10 +368,15 @@ polling loop (`telegram_bot_service.rb:27`), which blocked the single-threaded l
 round-trip for every inbound message. Ingest becomes a plain insert; everything expensive moves to
 the background jobs in §5.
 
-**Webhook vs polling:** webhooks are the more robust production choice (no `sleep 5; retry` loop, no
-single point of failure, work is spread across web dynos) and the app already has Puma and a health
-endpoint. But note the current `Procfile` has no `web` process — adopting webhooks means adding one.
-Polling is fine for launch; the ingest boundary above makes the switch a one-file change either way.
+**Webhook vs polling — deliberately deferred.** Webhooks are the more robust production choice (no
+`sleep 5; retry` loop, no single-threaded listener, work spread across web dynos), and the app
+already has Puma and a health endpoint — but the current `Procfile` has no `web` process, so
+adopting them means adding one.
+
+**No decision is needed yet.** Phase 1 ships on the existing polling rake task. The ingest boundary
+above is the whole point: the transport hands `IngestMessageJob` a normalised message and nothing
+downstream knows or cares where it came from, so switching later is one new controller plus a
+`Procfile` line. Revisit if polling actually proves flaky in production, not before.
 
 ---
 
@@ -416,11 +485,21 @@ about named people. For a small volunteer community this is a social question, n
 one. Ship with: a stated retention policy in `/help`, a `/forget <n>` command to purge recent
 messages, and exclusion of any channel not explicitly opted in.
 
-**Cost** (rough, ~200 messages/day): chunk summaries and embeddings tens of cents/month; nightly fact
-extraction similar; the agent loop dominates at 2–3 calls per query. Total realistically under
-$10/month.
+**Cost**, assuming ~200 messages/day (revise once §12.1 is answered):
 
-*Correction to an earlier estimate: chunking does not reduce embedding cost. v1 embedded ~200 short
+| Item | Model | Rough monthly |
+|---|---|---|
+| Embeddings (~30 chunks/day + facts) | `text-embedding-3-large` | cents |
+| Chunk summaries (~30/day) | `claude-haiku-4-5` | well under $1 |
+| Nightly fact extraction | `claude-haiku-4-5` | well under $1 |
+| Agent loop (~20 queries/day × 2–3 calls) | `claude-sonnet-5` | the dominant line item |
+| Daily digest + weekly summary | `claude-haiku-4-5` | cents |
+
+Total realistically under $10/month, and the agent loop is the only line worth optimising. The two
+levers there are prompt caching on the stable prefix (~0.1× on cached input — see §4.1) and the
+`effort` setting, both of which the eval harness can be pointed at directly.
+
+*Note on chunking economics: chunking does not reduce embedding cost. v1 embedded ~200 short
 messages/day; v2 embeds ~30 chunks/day but adds a summary-generation call per chunk. Net cost is
 slightly higher. The case for chunking is retrieval quality, not price.*
 
@@ -437,26 +516,35 @@ job. Bot stores everything and answers nothing. *Ships: a clean log.*
 new prompt. Eval harness Tiers 1–2 built **alongside** it, with the golden set written before the
 tuning starts. *Ships: a bot that answers well, and proof that it does.*
 
-**Phase 3 — Events & reminders.** `events`/`reminders`, explicit creation via tools, reminder poller,
-daily digest. *Ships: the concierge behaviour.*
+**Phase 3 — Events & reminders.** `events`/`reminders`, explicit creation via tools, dedup,
+cancellation/listing, the reminder poller, daily digest. *Ships: the concierge behaviour.*
 
-**Phase 4 — Ambient intelligence.** Fact extraction with supersession, event candidates with
-confirmation, weekly summary, Tier-3 judge evals in CI. *Ships: memory that improves on its own.*
+**Phase 4 — Semantic memory.** Fact extraction with supersession, weekly summary, Tier-3 judge
+evals in CI. All silent background work — no new unprompted output. *Ships: memory that improves on
+its own.*
 
-**Phase 5 — Tuning.** Chunk gap, recency window, RRF weights, reranking, model choice — all decided
+**Phase 5 — Tuning.** Chunk gap, recency window, RRF weights, reranking, effort level — all decided
 by eval numbers rather than intuition.
 
 ---
 
-## 11. Open questions
+## 11. Decisions made
 
-1. **Message volume** — messages/day and channel count drive the recency window and chunk sizing.
-2. **Agent model** — mini is too weak for reliable multi-step tool use; which model for the loop?
-3. **Ambient extraction appetite** — is a confirmation prompt in-channel acceptable noise, or should
-   ambient events stay silent until asked?
-4. **Reminder targeting** — announce to the whole channel, or DM the person who asked? (DMs require
-   the user to have started a chat with the bot.)
-5. **Webhook or keep polling** for launch.
+- **Agent model** — provider-agnostic completion adapter; `claude-sonnet-5` for the agent loop,
+  `claude-haiku-4-5` for background work, OpenAI `text-embedding-3-large` retained for embeddings
+  (§4.1).
+- **Event capture** — explicit tagging only. No ambient detection (§6).
+- **Ingest transport** — deferred; ship Phase 1 on polling, switch behind the ingest boundary if
+  needed (§7).
+
+## 12. Open questions
+
+1. **Message volume** — messages/day and channel count. Drives `RECENT_WINDOW_HOURS`,
+   `CHUNK_GAP_MINUTES`, and whether the recency window can be as generous as 8–12h.
+2. **Reminder targeting** — announce to the whole channel, or DM the person who asked? DMs require
+   the user to have started a private chat with the bot, so channel announcements are the safe
+   default; per-event choice is possible but adds a decision to every creation.
+3. **Digest opt-in** — does the daily 07:00 digest go to every channel, or one designated one?
 
 ---
 
