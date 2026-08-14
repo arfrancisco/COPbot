@@ -146,6 +146,12 @@ after `CHUNK_GAP_MINUTES` (start at 12) of silence, or when it exceeds a message
 chunker seals every segment that has gone quiet and **leaves the still-active trailing segment
 alone** — so no chunk is ever embedded twice while it is still growing.
 
+**The summary must preserve specifics verbatim.** Numbers, codes, amounts, dates, proper names,
+brands, addresses — never abstracted. *"The lock code is 4729"* is correct; *"the lock code was
+shared"* silently destroys the only information anyone wanted, removes it from the embedding, and
+hides it from the fact extractor downstream. This one prompt rule is load-bearing for the entire
+`needle` query class (§4.7).
+
 **Search the summary, return the transcript.** This is parent-document / hierarchical retrieval, the
 dominant production pattern in 2025–26: the small clean summary gives a dense, high-signal vector to
 match against; the full transcript is what the model actually reads. It beats embedding raw
@@ -744,7 +750,139 @@ explicit test. The golden-set entry asserts on **both** directions:
 *well*, because the wrong answer retrieves all the right need-messages — it just misses the
 rebuttals. This is the one eval category where precision matters more than recall.
 
-### 4.7 Model selection — two independent choices
+### 4.7 The other hard case: *"ano yung code sa cage locks?"*
+
+Also a known v1 failure — and the **exact opposite** problem to §4.6. Worth reading the two together,
+because they define the two poles the retrieval design has to span:
+
+| | §4.6 — aggregate | §4.7 — needle |
+|---|---|---|
+| Answer lives in | many messages, several channels, weeks apart | **one message, said once** |
+| Fails by | missing a rebuttal → wrong answer | missing the message → "I don't know" |
+| Query matches | everything topically, nothing decisively | almost nothing semantically |
+| Fixed by | reading exhaustively | **not searching at all** |
+
+#### Why v1 failed it, specifically
+
+Four compounding reasons, and the fourth is almost funny:
+
+1. **The answer's embedding is noise.** The message is *"4729"*, or *"yung code sa kandado 4729"*.
+   A four-digit number carries essentially no semantic signal. This is §1.2 in its purest form.
+2. **Vocabulary mismatch.** The asker says "code for the cage locks". The message says *kandado*, or
+   *combination*, or *padlock*, or just the bare number as a reply. Cosine similarity between those
+   is weak.
+3. **Said once, months ago.** No recency window reaches it; it must win against 90 days of history.
+4. **v1's scoring actively penalised it.** `Message.search_by_embedding` gave `+0.6` to messages over
+   500 characters. The correct answer is ~20 characters and got nothing, while long rambling messages
+   that merely mentioned "cage" got boosted above it. The heuristic was inverted for exactly this
+   query class — and nobody could have known, because there was no eval to show it.
+
+#### The fix: this should never reach retrieval
+
+*"The cage lock code is 4729"* is the textbook `facts` row — small, durable, stable, asked
+repeatedly. It goes into **part C of every prompt** (§4.1), unconditionally, before the model has
+even read the question. No search runs. There is no ranking to lose to, no threshold to fall below,
+no vocabulary to mismatch.
+
+This example is what makes layer 3 load-bearing rather than a nice-to-have. Before it, `facts` looked
+like a convenience for the feeding schedule; it's actually the mechanism that makes the whole class
+of *"what's the X for Y"* questions reliable.
+
+#### The requirement this places on the summarizer
+
+There's a trap here that would quietly break everything. If `ChunkConversationsJob` writes an
+abstract summary — *"The group discussed access arrangements for the cages"* — then the code is gone
+from the summary, gone from the embedding, and the fact extractor reading chunks never sees it.
+Summarisation would have destroyed precisely the information that mattered.
+
+So the summarizer prompt carries an explicit rule:
+
+> *Preserve concrete specifics verbatim in the summary — numbers, codes, amounts, dates, proper
+> names, brands, addresses. Never abstract them away. "The lock code is 4729" is correct; "the lock
+> code was shared" is a failure.*
+
+This matters beyond this one query: it's what keeps `₱1,850`, `7:00 AM`, and `Prisma Vet on Shaw`
+findable after chunking.
+
+#### Four layers of defence, in order
+
+Even with facts, design for the extractor missing it:
+
+1. **`facts`** — injected into every prompt. Primary path, no retrieval involved.
+2. **FTS half of the hybrid search** — `tsv` covers summary *and* transcript, so the literal token
+   `4729` and the literal token `cage` are both indexed. This is exactly the case the lexical
+   retriever exists for and the vector retriever is worst at (§4.3). Note it works in the *other*
+   direction too: someone asking *"anong 4729?"* gets an exact hit.
+3. **`get_message_thread(message_id)`** — a bare *"4729"* is usually a reply. The
+   `reply_to_message_id` graph (§3.1) expands it back to the question it answered, restoring the
+   context that makes it interpretable.
+4. **The model can rephrase and search again** — *kandado*, *padlock*, *combination* — which v1,
+   with its single fixed query embedding, could not do.
+
+#### When the code changes
+
+Supersession (§3.3) is the whole game here, and getting it wrong is worse than not answering. If the
+code was 4729 in July and 8815 from September, the bot must say 8815 — a confidently stated stale
+code sends someone to a lock that won't open.
+
+The extractor writes a new row with the same `subject` (`cage_lock_code`) and sets `superseded_by_id`
+on the old one. Queries read `WHERE superseded_by_id IS NULL`. The July row survives for audit, and
+if someone asks *"kailan pa nagbago yung code?"* the history is there.
+
+**Facts should carry `valid_from` in the rendered prompt** — *"Cage lock code is 8815 (as of Sep 12)"*
+— so a stale-looking answer is visibly stale rather than silently authoritative.
+
+#### A security question this raises — needs a decision
+
+This makes the bot a convenient, searchable index of the community's access codes. That is the
+feature being asked for, but it has an edge worth naming: **the bot answers in private DMs**
+(`bot.rake` treats `is_private_chat` as sufficient), and Telegram DMs persist after someone leaves
+the group. Somebody removed from the community could still DM the bot and ask for the gate code.
+
+Options, cheapest first:
+
+- **Do nothing.** Reasonable if the codes are low-stakes and the group is stable.
+- **Answer sensitive facts in-channel only** — in a DM, reply *"I can share that in the group chat"*.
+  Requires a `sensitive: boolean` on `facts` and one branch in the prompt.
+- **Verify membership** via Telegram's `getChatMember` before answering a DM. Most correct, one extra
+  API call, and it handles departures properly.
+
+Flagging rather than deciding — it's a community-policy call. My default would be the second: cheap,
+no new API dependency, and it fails safe.
+
+#### Closing the loop: the query log tells you what facts are missing
+
+If people keep asking for the cage code, that *is* the signal it should be a fact. `user_queries`
+already logs every question asked (v1 built this — it's the one piece worth keeping wholesale).
+
+A weekly job that clusters recent questions and flags repeats with no covering fact turns that table
+into a **coverage report for the facts layer**:
+
+> *3 people asked about the cage code this week; no active fact has subject `cage_lock_code`.*
+
+That's a self-improving loop with no ambient inference and no unprompted posting — it's a report for
+you, not a message to the group. It also directly feeds the golden set (§8.5): a repeated question
+that the bot answered badly is the highest-value eval entry there is.
+
+#### Eval category: `needle`
+
+```yaml
+- id: cage_lock_code
+  question: "Ano yung code sa cage locks?"
+  category: needle
+  expects:
+    must_contain: ["8815"]
+    must_not_contain: ["4729"]        # ← the superseded code; a stale answer is worse than none
+    rubric: >
+      States the current code and when it was set. Does not state the old code
+      as current. If it mentions the old code at all, marks it as previous.
+```
+
+Like `aggregate_state`, the `must_not_contain` is the real assertion. And note the eval corpus needs
+the code to have *changed* at some point — a needle test against a value that never changed passes
+trivially and proves nothing about supersession.
+
+### 4.8 Model selection — two independent choices
 
 `gpt-4o-mini` is too weak for reliable multi-step tool use, and the whole design depends on it. The
 key structural fact that makes changing this cheap:
@@ -804,7 +942,7 @@ send 3–5, and RRF truncation at 5 is the cheap version of that last step. Add 
 the top 20 only if the Tier-1 eval numbers (§8.2) show recall@20 is good while recall@5 is not —
 that gap is the only evidence that reranking would earn its latency.
 
-### 4.8 Label context by *kind*, not just content
+### 4.9 Label context by *kind*, not just content
 
 ```
 ## RECENT ACTIVITY — last 8 hours, COMPLETE, nothing omitted
@@ -830,6 +968,7 @@ Driven by `sidekiq-cron`:
 | `ExtractFactsJob` | nightly | Distil/supersede semantic memory |
 | `DailyDigestJob` | 07:00 Manila | Today's schedule + yesterday's highlights |
 | `WeeklySummaryJob` | Sun 18:00 Manila | Week in review, open items |
+| `FactCoverageReportJob` | weekly | Cluster `user_queries`; flag repeated questions with no covering fact (§4.7) — a report for the maintainer, **not** a message to the group |
 | `PruneJob` | nightly | Retention (§9) |
 
 **Reminders use a poller, not `perform_at`.** Sidekiq's scheduled set lives in Redis; a scheduled job
@@ -941,11 +1080,12 @@ Deliberately cover the four question types that broke v1, plus the failure modes
 | `structured` | "When's the next vet visit?" |
 | `multi_hop` | "Who volunteered last week and did they bring food?" |
 | **`aggregate_state`** | **"Ano na kailangan nating bilhin?" ← known v1 failure; see §4.6** |
+| **`needle`** | **"Ano yung code sa cage locks?" ← known v1 failure; see §4.7** |
 | `language` | Same question in EN / TL / Taglish → answer must match input language |
 | `refusal` | Question about something genuinely never discussed → must say so, not confabulate |
 | `safety` | "Cat is limping and won't eat" → must escalate to a vet |
 
-Two categories carry more weight than the rest.
+Three categories carry more weight than the rest.
 
 **`refusal`** — a bot tuned only for recall learns to confabulate, and this is the only category that
 catches it.
@@ -956,6 +1096,15 @@ retrieves every relevant need-message and scores well on recall@k; it's wrong be
 rebuttals*. These entries must assert on `must_not_contain` (the resolved items) as hard as on
 `must_contain`, and they need enough corpus depth — a need, then its resolution weeks later in a
 different channel — to be a real test. See §4.6 for the design this category exists to police.
+
+**`needle`** — one short message, said once, months ago, with no semantic handle. Also
+precision-first: a superseded value stated as current (an old lock code, an old vet number) is worse
+than no answer, because someone acts on it. The corpus must contain a value that *changed*, or the
+test proves nothing about supersession. See §4.7.
+
+Both `aggregate_state` and `needle` share a property that shapes the harness: **the wrong answer
+scores well on recall@k.** Tier 1 alone cannot police them — they need the Tier-2 `must_not_contain`
+assertions, which is the main argument for Tier 2 existing at all.
 
 ### 8.2 Three tiers, cheapest first
 
