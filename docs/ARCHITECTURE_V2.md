@@ -389,10 +389,211 @@ the model is given tools and decides what to look up.
 don't add an agent loop if your static pipeline already hits ~85% context recall — assumes
 homogeneous queries. Ours are not: the four question types in §1.3 need four different lookups, and
 a follow-up like *"and who was supposed to bring the carrier?"* needs a second retrieval informed by
-the first. Cost is 2–3 model round-trips instead of 1, which at this community's volume is
-immaterial.
+the first. Cost is 2–3 model round-trips instead of 1.
 
-### 4.1 Model selection — two independent choices
+### 4.1 What gets assembled before the model is ever called
+
+Two different things are happening, and conflating them is what makes this confusing:
+
+- **Assembly** is deterministic Ruby code. It runs before any model call and always produces the
+  same four parts. It does not "decide" anything.
+- **Retrieval** is the model calling a tool, mid-loop, when it decides it needs more.
+
+`ContextBuilder` does the assembly. It always emits these four parts, **in this order**, because the
+order is what makes prompt caching work:
+
+| # | Part | Source | Changes | ~Tokens |
+|---|---|---|---|---|
+| A | System prompt + tool definitions | Static | Per deploy | ~1,300 |
+| B | Channel roster | `SELECT DISTINCT channel_id, channel_name` | Rarely | ~100 |
+| C | **All active facts** | `facts WHERE superseded_by_id IS NULL` | Nightly | ~800 |
+| | ◀ *cache breakpoint* | | | |
+| D1 | Current date/time (Manila) | `Time.now` | Every request | ~20 |
+| D2 | **Recency window** — every message from the last `RECENT_WINDOW_HOURS`, chronological | `messages WHERE message_timestamp > ?` | Every request | ~1,800 |
+| D3 | The question, and the last ~20 turns if it's a follow-up | The Telegram update | Every request | ~150 |
+
+Parts A–C are byte-identical across requests for a whole day, so a `cache_control` breakpoint after
+C means the ~2,200-token prefix is cached. **This is why the current timestamp must not go in the
+system prompt** — v1 interpolates it there (`open_ai_service.rb:155`), which would move a
+per-request value into the cached prefix and invalidate the cache on every single call.
+
+> **Where caching actually pays.** With ~20 sporadic queries a day, most *first* turns will find a
+> cold cache — the 5-minute TTL will usually have expired. The reliable win is **inside a single
+> query's agent loop**: turn 2 fires seconds after turn 1 with an identical prefix, so it always
+> hits. A 2–3 turn loop pays the full prefix once instead of two or three times. Follow-up questions
+> in the same conversation hit it too.
+
+**Part C is the quiet one that matters.** Every active fact goes into every prompt unconditionally —
+no search, no relevance filter. There are only tens of them, they're one line each, and it means
+*"anong oras pinapakain?"* is answered from context the model already has. It never needs to search,
+and it can never fail to find it.
+
+**Part D2 is the fix for v1's headline failure.** Everything from the last N hours goes in verbatim
+and in time order. A discussion from five minutes ago isn't competing for a retrieval slot — it
+isn't being retrieved at all, it's just *there*.
+
+### 4.2 The loop, end to end
+
+Thu 17 Sep, 4:20 PM. In **Tower B Feeding**, someone posts:
+
+> *"@copbot nabayaran na ba yung vet ni Mingming? sino nagbayad?"*
+
+**Step 0 — assembly (no model call).** `ContextBuilder` runs the six queries above. Part D2 pulls
+every message since 8:20 AM — 41 messages today, none about the vet. The rendered prompt:
+
+```
+[A] You are a concierge for the Prisma Residences cat volunteers…
+    Tools: search_conversations, get_messages_in_range, get_message_thread,
+           lookup_facts, list_events, create_event, create_reminder
+
+[B] ## CHANNELS
+    Tower B Feeding · Tower A Feeding · Supplies · General
+
+[C] ## COMMUNITY FACTS — current, complete
+    - Cats are fed twice daily, 7:00 AM and 6:00 PM
+    - Prisma Vet on Shaw is the clinic the community uses; open until 8 PM
+    - Mingming is the orange tabby that stays near Tower B lobby
+    … 37 more …
+    ────────────────────────────── cache breakpoint ──────────────────────────────
+[D1] Current time: Thursday, 17 September 2026, 4:20 PM (Manila)
+
+[D2] ## RECENT ACTIVITY — last 8 hours, COMPLETE, nothing omitted
+     Tower B Feeding
+       Ana (8:31 AM): pinakain ko na sila ngayong umaga
+       … 39 more messages, chronological …
+       Ana (4:20 PM): @copbot nabayaran na ba yung vet ni Mingming? sino nagbayad?
+
+[D3] Question: nabayaran na ba yung vet ni Mingming? sino nagbayad?
+```
+
+**Turn 1 — the model looks and decides.** Facts tell it who Mingming is. The recency window says
+nothing about payment, and it's labelled COMPLETE — so the model knows the answer isn't in today's
+messages rather than guessing it might be. It emits two tool calls in one turn:
+
+```
+list_events(from: "2026-09-01", to: "2026-09-17")
+search_conversations(query: "bayad vet Mingming reimbursement", limit: 5)
+```
+
+**Step 2 — our code runs both** (concurrently) and returns results as `tool_result` blocks.
+`list_events` returns event 88. `search_conversations` runs the hybrid query in §4.3 and returns two
+chunk transcripts: chunk 312 (the injury conversation) and chunk 340 — a Supplies-channel exchange
+two weeks ago where John posted a receipt for ₱1,850 and Lisa said she'd transfer him half.
+
+**Turn 2 — the model answers**, or calls more tools if it still can't. Here it has enough:
+
+> *"Nabayaran na po — si John ang nag-shoulder ng ₱1,850 sa Prisma Vet noong Sep 3, tapos
+> nag-transfer si Lisa ng kalahati ( ₱925) nung Sep 5. 🐱 Galing yan sa usapan nila sa #Supplies —
+> pero hindi ko nakita kung na-reimburse na siya ng iba, baka i-check niyo kay John."*
+
+Three things that came from three different layers: the cat's identity from **facts**, the
+appointment from **events**, the payment thread from **chunks** — and the honest "I didn't see" is
+possible because the model knows which sections were complete and which were partial.
+
+**If the first search comes back empty**, the loop is what saves it: the model can rephrase and
+search again (`"reimburse gastos pusa"`), widen the date range, or fall back to
+`get_messages_in_range`. v1 had exactly one shot at one query embedding and no way to notice it had
+missed.
+
+**Bounding the loop.** Cap at 5 tool-calling turns. On the cap, answer from what's in hand and say
+what wasn't found — never silently truncate. The eval harness (§8) tracks turns-per-query; if it
+routinely hits 4–5, the tool descriptions are unclear, not the model.
+
+### 4.3 Inside `search_conversations`
+
+This is the part that "finds the correct data", and it is ordinary SQL — two rankings fused.
+
+```sql
+WITH semantic AS (          -- what the text MEANS
+  SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> $1) AS rank
+  FROM conversation_chunks
+  WHERE ended_at < $2                        -- older than the recency window
+  ORDER BY embedding <=> $1 LIMIT 20
+),
+lexical AS (                -- the exact WORDS
+  SELECT c.id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(c.tsv, q) DESC) AS rank
+  FROM conversation_chunks c, plainto_tsquery('simple', $3) q
+  WHERE c.tsv @@ q AND c.ended_at < $2
+  ORDER BY ts_rank_cd(c.tsv, q) DESC LIMIT 20
+)
+SELECT c.id, c.transcript, c.started_at, c.channel_name,
+       COALESCE(1.0/(60 + s.rank), 0) + COALESCE(1.0/(60 + l.rank), 0) AS rrf_score
+FROM conversation_chunks c
+LEFT JOIN semantic s ON s.id = c.id
+LEFT JOIN lexical  l ON l.id = c.id
+WHERE s.id IS NOT NULL OR l.id IS NOT NULL
+ORDER BY rrf_score DESC
+LIMIT 5;
+```
+
+Four things this does deliberately:
+
+**1. `ended_at < $2` excludes anything already in the recency window.** Without it the model would
+see today's messages twice — once verbatim in part D2, once as a retrieved chunk — wasting budget
+and muddying "what's recent".
+
+**2. `'simple'` text-search config, not `'english'`.** There is no Filipino stemmer in Postgres, and
+the English one would mangle Tagalog. `simple` does no stemming and strips no stop words — the same
+call v1 got right when it chose not to filter stop words.
+
+**3. RRF fuses by rank, not score.** Cosine distances and `ts_rank_cd` values aren't comparable —
+one is 0–2, the other is unbounded — so you can't average them without inventing weights. Ranks are
+comparable. With `k = 60`:
+
+| chunk | vector rank | FTS rank | RRF score | |
+|---|---|---|---|---|
+| 340 | 2 | 1 | `1/62 + 1/61` = **0.0325** | in **both** lists → wins |
+| 312 | 1 | 6 | `1/61 + 1/66` = **0.0315** | strong semantically |
+| 455 | — | 2 | `0 + 1/62` = **0.0161** | exact words only |
+| 401 | 3 | — | `1/63 + 0` = **0.0159** | vibes only |
+
+Chunk 340 beats 312 despite ranking *lower* on the vector search, because it's the only one both
+retrievers agree on. That agreement property is the whole point — and it's parameter-free, unlike
+v1's `* 0.8 / + 1.0 / + 0.6` constants that nobody could justify.
+
+**4. It returns `transcript`, not `summary`.** Matching happened against the summary's embedding;
+the model reads the full 8-line exchange, so it can name John and Lisa and quote the amount.
+
+### 4.4 The token budget, and what gives when it doesn't fit
+
+Rough per-turn shape at ~200 messages/day:
+
+```
+A+B+C  static prefix          ~2,200   (cached after turn 1)
+D1+D3  time + question          ~170
+D2     recency window (8h)    ~1,800   ← scales linearly with RECENT_WINDOW_HOURS
+       ─────────────────────────────
+       turn 1 input           ~4,200
+       + tool results (5 chunks × ~400)  +2,000
+       turn 2 input           ~6,200   (of which 2,200 served from cache)
+```
+
+**`RECENT_WINDOW_HOURS` is the single biggest cost lever**, and it's linear: it's paid on every turn
+of every query. 8h ≈ 1,800 tokens; 24h ≈ 5,400. Set it from measured message volume (§12.1), and if
+volume grows, cap the window by token count rather than hours so a busy day can't blow the budget.
+
+Order of degradation when the budget is tight — cheapest to lose first:
+
+1. Drop retrieved chunks from 5 → 3.
+2. Shrink the recency window, oldest first, but **never below ~2 hours** — that's the failure mode
+   we're fixing.
+3. Truncate long individual messages, keeping sender and timestamp.
+4. Never drop facts. They're small and they're the difference between a concierge and a search box.
+
+### 4.5 Why this can't fail the way v1 failed
+
+Trace v1's headline bug through the new path: someone asks about a decision made ten minutes ago.
+
+- v1: the message had to win a cosine-similarity contest against 90 days of history at `limit: 25`,
+  with recency explicitly removed from the ranking. It usually lost.
+- v2: it's in part D2. No ranking, no threshold, no competition — it's in the prompt because it
+  happened recently, full stop. Retrieval isn't involved and therefore can't fail.
+
+The failure modes that remain are real but different in kind, and each is caught by a specific eval
+category in §8: retrieval misses something genuinely old (`multi_hop`, measured by recall@k), or the
+model confabulates when nothing was found (`refusal`).
+
+### 4.6 Model selection — two independent choices
 
 `gpt-4o-mini` is too weak for reliable multi-step tool use, and the whole design depends on it. The
 key structural fact that makes changing this cheap:
@@ -447,24 +648,12 @@ at `medium` effort and let the eval harness in §8 pick the level.
 completion adapter's implementation. The eval harness makes that an A/B rather than a guess, which
 is the main argument for building §8 before committing to a provider.
 
-### 4.2 Retrieval mechanics
+**Reranking is deliberately left out for now.** The research consensus is retrieve ~20 → rerank →
+send 3–5, and RRF truncation at 5 is the cheap version of that last step. Add an LLM reranker over
+the top 20 only if the Tier-1 eval numbers (§8.2) show recall@20 is good while recall@5 is not —
+that gap is the only evidence that reranking would earn its latency.
 
-Inside `search_conversations`:
-
-1. **Hybrid recall** — vector search over `embedding` **and** full-text search over `tsv`, run
-   independently, top ~20 each.
-2. **Fuse with Reciprocal Rank Fusion** (`score = Σ 1/(k + rank)`, k=60). RRF consistently beats
-   either retriever alone, and — unlike v1's hand-tuned constants — it has essentially no knobs.
-   Vector search alone is bad at exact tokens (names, dates, clinic names, "Mingming"); FTS covers
-   that gap.
-3. **Rerank to ~5.** Start with plain RRF truncation; add an LLM reranker over the top 20 if evals
-   show it earns its latency.
-4. **Exclude chunks inside the recency window** — those messages are already in the prompt verbatim.
-
-Note for Tagalog/Taglish: Postgres has no Filipino FTS dictionary. Use the `simple` configuration
-(no stemming, no stop words) — mirroring v1's correct decision not to strip stop words.
-
-### 4.3 Label context by *kind*, not just content
+### 4.7 Label context by *kind*, not just content
 
 ```
 ## RECENT ACTIVITY — last 8 hours, COMPLETE, nothing omitted
@@ -677,12 +866,20 @@ messages, and exclusion of any channel not explicitly opted in.
 | Embeddings (~30 chunks/day + facts) | `text-embedding-3-large` | cents |
 | Chunk summaries (~30/day) | `claude-haiku-4-5` | well under $1 |
 | Nightly fact extraction | `claude-haiku-4-5` | well under $1 |
-| Agent loop (~20 queries/day × 2–3 calls) | `claude-sonnet-5` | the dominant line item |
 | Daily digest + weekly summary | `claude-haiku-4-5` | cents |
+| **Agent loop** (~20 queries/day × 2–3 turns) | `claude-sonnet-5` | **~$18** |
 
-Total realistically under $10/month, and the agent loop is the only line worth optimising. The two
-levers there are prompt caching on the stable prefix (~0.1× on cached input — see §4.1) and the
-`effort` setting, both of which the eval harness can be pointed at directly.
+Working from the §4.4 token budget: ~6,400 effective input tokens per query after caching, ~800
+output, ≈ **$0.03/query**. At 20 queries/day that's ~$18/month, and it dwarfs everything else — call
+the total **$20–25/month**.
+
+*This supersedes an earlier "under $10/month" estimate in this document's first draft, which was
+written before the per-turn token budget existed. The background jobs were costed correctly; the
+agent loop was not.*
+
+Three levers, in order of effect: **`RECENT_WINDOW_HOURS`** (linear, paid on every turn — see §4.4),
+**prompt caching** on the static prefix, and the **`effort`** setting. All three are things the eval
+harness can be pointed at directly, which is the argument for building §8 before tuning any of them.
 
 *Note on chunking economics: chunking does not reduce embedding cost. v1 embedded ~200 short
 messages/day; v2 embeds ~30 chunks/day but adds a summary-generation call per chunk. Net cost is
